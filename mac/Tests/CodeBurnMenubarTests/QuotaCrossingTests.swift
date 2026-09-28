@@ -150,9 +150,10 @@ struct QuotaCrossingMonitorTests {
 
 @MainActor
 private func withMonitor(
+    testName: String = #function,
     _ body: @MainActor (QuotaCrossingMonitor, RecordingCrossingNotifier, UserDefaults) async throws -> Void
 ) async throws {
-    let (defaults, suiteName) = TestDefaults.make("codeburn.quota.crossing")
+    let (defaults, suiteName) = TestDefaults.make("codeburn.quota.crossing.\(testName)")
     TestDefaults.forget(suiteName)
     defer { TestDefaults.forget(suiteName) }
 

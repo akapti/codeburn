@@ -608,9 +608,10 @@ private func seedBaseline(_ monitor: EarlyQuotaResetMonitor) async {
 
 @MainActor
 private func withIsolatedMonitor(
+    testName: String = #function,
     _ body: @MainActor (EarlyQuotaResetMonitor, RecordingEarlyResetNotifier, UserDefaults) async throws -> Void
 ) async throws {
-    let (defaults, suiteName) = TestDefaults.make("codeburn.quota.earlyReset")
+    let (defaults, suiteName) = TestDefaults.make("codeburn.quota.earlyReset.monitor.\(testName)")
     TestDefaults.forget(suiteName)
     defer { TestDefaults.forget(suiteName) }
 
@@ -951,9 +952,10 @@ struct EarlyQuotaResetCodexWiringTests {
     }
 
     private func withCodexStore(
+        testName: String = #function,
         _ body: @MainActor (AppStore, RecordingEarlyResetNotifier) async throws -> Void
     ) async throws {
-        let (defaults, suiteName) = TestDefaults.make("codeburn.quota.earlyReset")
+        let (defaults, suiteName) = TestDefaults.make("codeburn.quota.earlyReset.codexWiring.\(testName)")
         TestDefaults.forget(suiteName)
         defer { TestDefaults.forget(suiteName) }
 

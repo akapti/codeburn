@@ -42,7 +42,7 @@ struct MenubarPeriodSettingsTests {
 
     @Test("periods persist canonical defaults values")
     func periodsPersistCanonicalDefaultsValues() {
-        let (defaults, suiteName) = TestDefaults.make()
+        let (defaults, suiteName) = TestDefaults.make("CodeBurnMenubarTests.\(#function)")
         defer { TestDefaults.forget(suiteName) }
 
         Period.sevenDays.persistAsMenubarDefault(defaults: defaults)
@@ -60,7 +60,7 @@ struct MenubarPeriodSettingsTests {
 
     @Test("menubar scope persistence defaults to local and round-trips")
     func menubarScopePersistenceDefaultsToLocalAndRoundTrips() {
-        let (defaults, suiteName) = TestDefaults.make()
+        let (defaults, suiteName) = TestDefaults.make("CodeBurnMenubarTests.\(#function)")
         defer { TestDefaults.forget(suiteName) }
 
         #expect(MenubarScope.savedMenubarScope(defaults: defaults) == .local)

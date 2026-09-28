@@ -265,7 +265,7 @@ struct TerminalLauncherTests {
 
     @Test("preference defaults to Terminal.app when unset, preserving pre-#877 behaviour")
     func defaultsToTerminalWhenUnset() {
-        let (defaults, suiteName) = TestDefaults.make()
+        let (defaults, suiteName) = TestDefaults.make("CodeBurnMenubarTests.\(#function)")
         defer { TestDefaults.forget(suiteName) }
 
         #expect(PreferredTerminal.saved(defaults: defaults) == .terminal)
@@ -274,7 +274,7 @@ struct TerminalLauncherTests {
 
     @Test("preference round-trips and unknown values collapse to the default")
     func preferenceRoundTripsAndRejectsGarbage() {
-        let (defaults, suiteName) = TestDefaults.make()
+        let (defaults, suiteName) = TestDefaults.make("CodeBurnMenubarTests.\(#function)")
         defer { TestDefaults.forget(suiteName) }
 
         PreferredTerminal.iTerm2.persist(defaults: defaults)

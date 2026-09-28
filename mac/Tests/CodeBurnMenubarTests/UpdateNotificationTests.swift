@@ -98,9 +98,10 @@ struct UpdateNotificationTests {
 
 @MainActor
 private func withIsolatedChecker(
+    testName: String = #function,
     _ body: @MainActor (UpdateChecker, RecordingUpdateNotifier, UserDefaults) async throws -> Void
 ) async throws {
-    let (defaults, suiteName) = TestDefaults.make("codeburn.update.notifications")
+    let (defaults, suiteName) = TestDefaults.make("codeburn.update.notifications.\(testName)")
     TestDefaults.forget(suiteName)
     defer { TestDefaults.forget(suiteName) }
 

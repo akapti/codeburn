@@ -7,8 +7,8 @@ import Testing
 /// external write (verified out of process), KVO does, so the observer is what is tested.
 @Suite("Defaults key observer")
 struct DefaultsKeyObserverTests {
-    private func suite() -> (UserDefaults, String) {
-        TestDefaults.make("CodeBurnMenubarTests.DefaultsKeyObserver")
+    private func suite(_ testName: String = #function) -> (UserDefaults, String) {
+        TestDefaults.make("CodeBurnMenubarTests.DefaultsKeyObserver.\(testName)")
     }
 
     @Test("a change to the watched key calls back")

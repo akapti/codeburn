@@ -171,8 +171,8 @@ struct CapacityDockGlanceWindowTests {
 
     // MARK: - Persistence
 
-    private func defaults() -> (UserDefaults, String) {
-        TestDefaults.make("CodeBurnMenubarTests.CapacityDockGlance")
+    private func defaults(_ testName: String = #function) -> (UserDefaults, String) {
+        TestDefaults.make("CodeBurnMenubarTests.CapacityDockGlance.\(testName)")
     }
 
     @Test("the glance window defaults to the billing horizon for every provider")
