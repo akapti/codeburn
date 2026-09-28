@@ -102,7 +102,6 @@ private func withIsolatedChecker(
     _ body: @MainActor (UpdateChecker, RecordingUpdateNotifier, UserDefaults) async throws -> Void
 ) async throws {
     let (defaults, suiteName) = TestDefaults.make("codeburn.update.notifications.\(testName)")
-    TestDefaults.forget(suiteName)
     defer { TestDefaults.forget(suiteName) }
 
     let notifier = RecordingUpdateNotifier()

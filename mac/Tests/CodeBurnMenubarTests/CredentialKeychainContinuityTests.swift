@@ -40,7 +40,6 @@ struct CredentialKeychainContinuityTests {
         let support = root.appendingPathComponent("Application Support", isDirectory: true)
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let (defaults, suiteName) = TestDefaults.make("codeburn.0b.cont.\(testName)")
-        TestDefaults.forget(suiteName)
         let fake = InMemoryKeychainCredentialCache()
 
         ClaudeCredentialStore.resetTestSeams()
@@ -168,7 +167,6 @@ struct CredentialKeychainContinuityTests {
     func providerPresenceUpdatesAreAtomic() async {
         let (defaults, suiteName) = TestDefaults.make("codeburn.capacity-dock-presence.\(#function)")
         let defaultsBox = SendableUserDefaults(defaults)
-        TestDefaults.forget(suiteName)
         defer { TestDefaults.forget(suiteName) }
         let providerIDs = Array(CapacityDockPreferences.supportedProviders.prefix(24).map(\.id))
 

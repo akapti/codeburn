@@ -360,7 +360,6 @@ private func withAnnouncer(
     ) async throws -> Void
 ) async throws {
     let (defaults, suiteName) = TestDefaults.make("codeburn.codex.bankedResets.\(testName)")
-    TestDefaults.forget(suiteName)
     defer { TestDefaults.forget(suiteName) }
 
     let notifier = RecordingBankedResetNotifier()

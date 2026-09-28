@@ -23,7 +23,6 @@ struct CredentialKeychainCacheRedTests {
         let support = root.appendingPathComponent("Application Support", isDirectory: true)
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let (defaults, suiteName) = TestDefaults.make("codeburn.0b.red.\(testName)")
-        TestDefaults.forget(suiteName)
 
         let fakeKeychain = InMemoryKeychainCredentialCache()
         ClaudeCredentialStore.resetTestSeams()

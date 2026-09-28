@@ -23,9 +23,12 @@ enum TestDefaults {
     }
 
     /// Opens a suite/domain name as `UserDefaults`, for call sites that
-    /// already have their own name instead of calling `make(_:)`.
+    /// already have their own name instead of calling `make(_:)`. Forgets it
+    /// first, so a fixed name starts clean even after a run that got killed
+    /// before its own `forget(_:)` ran.
     static func open(_ suiteName: String) -> UserDefaults {
-        UserDefaults(suiteName: suiteName)!
+        forget(suiteName)
+        return UserDefaults(suiteName: suiteName)!
     }
 
     static func forget(_ suiteName: String) {
