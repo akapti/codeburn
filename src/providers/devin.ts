@@ -652,6 +652,7 @@ class DevinDbSessionParser implements SessionParser {
                   (SELECT json_group_array(json_extract(value, '$.name'))
                      FROM json_each(chat_message, '$.tool_calls')) AS tool_names,
                   CASE WHEN json_extract(chat_message, '$.role') = 'user'
+                        AND json_type(chat_message, '$.content') = 'text'
                        THEN json_extract(chat_message, '$.content') END AS content
            FROM message_nodes
            WHERE session_id = ? AND node_id > ?
