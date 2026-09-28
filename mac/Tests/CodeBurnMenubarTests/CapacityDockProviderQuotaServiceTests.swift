@@ -436,8 +436,7 @@ struct CapacityDockProviderQuotaServiceTests {
 
     @Test("removeProvider drops only the target and keeps manual selection unlatched")
     func removeProviderPersistence() throws {
-        let suiteName = "CodeBurnMenubarTests.CapacityDockRemove.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let (defaults, suiteName) = TestDefaults.make("CodeBurnMenubarTests.CapacityDockRemove")
         defer { TestDefaults.forget(suiteName) }
         let cursor = try #require(CapacityDockProvider(rawValue: "cursor"))
         defaults.set(["codex", "cursor"], forKey: CapacityDockPreferences.selectedProvidersKey)

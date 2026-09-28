@@ -38,8 +38,7 @@ struct CredentialKeychainContinuityTests {
             .appendingPathComponent("codeburn-0b-cont-\(UUID().uuidString)", isDirectory: true)
         let support = root.appendingPathComponent("Application Support", isDirectory: true)
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        let suiteName = "codeburn.0b.cont.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
+        let (defaults, suiteName) = TestDefaults.make("codeburn.0b.cont")
         TestDefaults.forget(suiteName)
         let fake = InMemoryKeychainCredentialCache()
 
@@ -166,8 +165,7 @@ struct CredentialKeychainContinuityTests {
 
     @Test("concurrent provider-presence updates do not lose identifiers")
     func providerPresenceUpdatesAreAtomic() async {
-        let suiteName = "codeburn.capacity-dock-presence.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
+        let (defaults, suiteName) = TestDefaults.make("codeburn.capacity-dock-presence")
         let defaultsBox = SendableUserDefaults(defaults)
         TestDefaults.forget(suiteName)
         defer { TestDefaults.forget(suiteName) }

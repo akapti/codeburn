@@ -64,13 +64,13 @@ struct TelemetryTests {
 
     /// A defaults suite and a directory that exist only for one test.
     final class Scratch {
-        let suiteName = "CodeBurnMenubarTests.Telemetry.\(UUID().uuidString)"
+        let suiteName: String
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("codeburn-telemetry-tests-\(UUID().uuidString)")
         let defaults: UserDefaults
 
         init() {
-            defaults = UserDefaults(suiteName: suiteName)!
+            (defaults, suiteName) = TestDefaults.make("CodeBurnMenubarTests.Telemetry")
             try? FileManager.default.createDirectory(
                 at: directory, withIntermediateDirectories: true)
         }

@@ -50,8 +50,7 @@ struct CopilotQuotaPresentationTests {
 
     @Test("explicit disconnect copy differs from first-use; clearing the flag restores first-use")
     func explicitDisconnectDiffersFromFirstUseAndClears() throws {
-        let suiteName = "codeburn.copilot.presentation.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let (defaults, suiteName) = TestDefaults.make("codeburn.copilot.presentation")
         TestDefaults.forget(suiteName)
         defer { TestDefaults.forget(suiteName) }
 

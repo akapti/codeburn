@@ -8,8 +8,7 @@ import Testing
 @Suite("Defaults key observer")
 struct DefaultsKeyObserverTests {
     private func suite() -> (UserDefaults, String) {
-        let name = "CodeBurnMenubarTests.DefaultsKeyObserver.\(UUID().uuidString)"
-        return (UserDefaults(suiteName: name)!, name)
+        TestDefaults.make("CodeBurnMenubarTests.DefaultsKeyObserver")
     }
 
     @Test("a change to the watched key calls back")

@@ -152,8 +152,7 @@ struct QuotaCrossingMonitorTests {
 private func withMonitor(
     _ body: @MainActor (QuotaCrossingMonitor, RecordingCrossingNotifier, UserDefaults) async throws -> Void
 ) async throws {
-    let suiteName = "codeburn.quota.crossing.\(UUID().uuidString)"
-    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    let (defaults, suiteName) = TestDefaults.make("codeburn.quota.crossing")
     TestDefaults.forget(suiteName)
     defer { TestDefaults.forget(suiteName) }
 

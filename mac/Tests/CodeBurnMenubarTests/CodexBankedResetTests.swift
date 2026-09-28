@@ -358,8 +358,7 @@ private func withAnnouncer(
         MemoryBankedResetStore
     ) async throws -> Void
 ) async throws {
-    let suiteName = "codeburn.codex.bankedResets.\(UUID().uuidString)"
-    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    let (defaults, suiteName) = TestDefaults.make("codeburn.codex.bankedResets")
     TestDefaults.forget(suiteName)
     defer { TestDefaults.forget(suiteName) }
 
