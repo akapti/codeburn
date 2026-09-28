@@ -228,7 +228,12 @@ import type { DateRange, ProjectSummary } from './types.js'
 // Call counts and cost only rise.
 // v42: #1076 long-context tiers. A Codex call past a model's published
 // long-context threshold prices at the tier rate, so settled days re-derive.
-export const DAILY_CACHE_VERSION = 42
+// v43: Devin usage comes from sessions.db instead of the transcript exports,
+// which held a few sessions and dated steps without metadata.created_at on the
+// session's last activity. Days finalized at v42 miss most Devin calls, and a
+// day can also lose calls that now land on their real date, so devin joins
+// PENDING_REDERIVE_PROVIDER_VERSIONS.
+export const DAILY_CACHE_VERSION = 43
 const MIN_SUPPORTED_VERSION = 28
 
 /// Providers whose per-day CALL COUNT means something different at
@@ -261,6 +266,9 @@ const PENDING_REDERIVE_PROVIDER_VERSIONS: Readonly<Record<string, number>> = {
   // DSH v0-only parsing and exclusive-reasoning display were both stale in
   // finalized days written before the multi-generation reader.
   dsh: 32,
+  // 43: transcript-era Devin days put every step lacking metadata.created_at
+  // on the session's last-activity day; sessions.db dates each request.
+  devin: 43,
 }
 
 function providersPendingRederiveFrom(fromVersion: number): string[] {
