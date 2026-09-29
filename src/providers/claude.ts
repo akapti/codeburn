@@ -161,9 +161,16 @@ export function getDesktopSessionsDirs(): string[] {
 
   if (override) return cacheDesktopSessionsDirs(cacheKey, [override])
   if (platform === 'darwin') {
+    const appSupport = join(homedir(), 'Library', 'Application Support')
     return cacheDesktopSessionsDirs(
       cacheKey,
-      [join(homedir(), 'Library', 'Application Support', 'Claude', 'local-agent-mode-sessions')],
+      [
+        join(appSupport, 'Claude', 'local-agent-mode-sessions'),
+        // Current Claude Desktop 3p builds use a distinct Electron user-data
+        // directory for Cowork, while the Code surface continues to use the
+        // traditional ~/.claude project store.
+        join(appSupport, 'Claude-3p', 'local-agent-mode-sessions'),
+      ],
     )
   }
   if (platform === 'win32') {
