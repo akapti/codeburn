@@ -265,15 +265,10 @@ import type { DateRange, ProjectSummary } from './types.js'
 // under-price them; the bump re-derives surviving days off the warm session
 // cache. MIN_SUPPORTED_VERSION stays at 28 (#1478's convention: a version bump
 // alone re-derives warm caches, so raising the floor buys nothing).
-// v54: `codex-auto-review` prices as gpt-5.4 before 30 Jul 2026 and GPT-5.6
-// Luna from then on (OpenAI's auto-review move), not gpt-5.5, so settled days
-// over-price it. Only cost falls; call counts are unchanged, so no
-// PENDING_REDERIVE_PROVIDER_VERSIONS entry is needed.
-// v55: Codex service_tier "flex" bills at the published Flex rates instead of
-// standard, and `gpt-reserve` / `gpt-5.3-spark` price as GPT-5.6 Luna / GPT-5.3
-// Codex Spark instead of $0. Only cost moves; call counts are unchanged, so no
-// PENDING_REDERIVE_PROVIDER_VERSIONS entry is needed.
-export const DAILY_CACHE_VERSION = 55
+// v56: #1579 Claude Desktop usage-ledger support, ledger-backed transcript
+// de-duplication, source metadata, and CodeBurn repricing change settled Claude
+// totals, so re-derive surviving days.
+export const DAILY_CACHE_VERSION = 56
 const MIN_SUPPORTED_VERSION = 28
 
 /// Providers whose per-day CALL COUNT means something different at
