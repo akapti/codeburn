@@ -3214,10 +3214,10 @@ function cachedFileNeedsProviderReparse(providerName: string, sourcePath: string
   // A 0-turn cache entry may just mean the server was unavailable last run.
   if (providerName === 'antigravity') return shouldReparseAntigravitySource(sourcePath, cached.turns.length)
 
-  // Devin transcript usage is enriched from sessions.db. The cache fingerprint
-  // only tracks the transcript JSON, so reparse to pick up DB-side project,
-  // title, model, and timestamp changes.
-  if (providerName === 'devin') return true
+  // A Devin transcript (read only when sessions.db is unusable) is enriched
+  // from sessions.db, which its fingerprint does not track, so it always
+  // reparses. A sessions.db source's fingerprint folds in the WAL already.
+  if (providerName === 'devin') return sourcePath.endsWith('.json')
 
   if (providerName !== 'gemini') return false
 

@@ -481,6 +481,12 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
   // (`h:<hash>:<n>`) instead of the bare payload hash; cached turns hold the
   // old keys, so without this bump they would suppress the re-parsed calls.
   openclaw: 'reported-cost-v1-sqlite-store-v1',
+  // sessions-db-v1: usage now comes from sessions.db message_nodes, one
+  // source per session keyed by request_id; transcripts are read only when the
+  // database is unusable. The legacy metadata.metrics path no longer carves
+  // cache reads out of an input count that never held them. Devin is not
+  // durable, so the bump rebuilds its section and old step_id keys go with it.
+  devin: 'sessions-db-v1',
   'lingtai-tui': 'token-ledger-registry-activity-v3',
   'ibm-bob': 'worktree-project-grouping-v1',
   // project-path-v1: the parser now records the session's full working

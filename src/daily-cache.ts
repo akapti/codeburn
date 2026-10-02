@@ -235,7 +235,12 @@ import type { DateRange, ProjectSummary } from './types.js'
 // and tokens are unchanged, but settled category totals need re-derivation.
 // v45: #1581 ZCode user prompt text now reaches classification. Calls and
 // cost are unchanged, but settled zcode category totals need re-derivation.
-export const DAILY_CACHE_VERSION = 45
+// v46: Devin usage comes from sessions.db instead of the transcript exports,
+// which held a few sessions and dated steps without metadata.created_at on the
+// session's last activity. Days finalized at v45 miss most Devin calls, and a
+// day can also lose calls that now land on their real date, so devin joins
+// PENDING_REDERIVE_PROVIDER_VERSIONS.
+export const DAILY_CACHE_VERSION = 46
 const MIN_SUPPORTED_VERSION = 28
 
 /// Providers whose per-day CALL COUNT means something different at
@@ -271,6 +276,9 @@ const PENDING_REDERIVE_PROVIDER_VERSIONS: Readonly<Record<string, number>> = {
   // DSH v0-only parsing and exclusive-reasoning display were both stale in
   // finalized days written before the multi-generation reader.
   dsh: 32,
+  // 46: transcript-era Devin days put every step lacking metadata.created_at
+  // on the session's last-activity day; sessions.db dates each request.
+  devin: 46,
 }
 
 function providersPendingRederiveFrom(fromVersion: number): string[] {
