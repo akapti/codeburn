@@ -3599,7 +3599,9 @@ export async function parseProviderSources(
 
   const wslHomesForOrphans = refreshWslHomesForOrphans(Object.keys(section.files), allDiscoveredFiles)
 
-  if (readOnly) {
+  // scanProjectDirs serves Claude's orphans; the Cowork ledger pass shares
+  // the claude section and would serve every transcript a second time.
+  if (readOnly && providerName !== 'claude') {
     for (const [path, cached] of cacheEntriesInLoadOrder(diskCache, providerName)) {
       if (allDiscoveredFiles.has(path)) continue
       if (isCacheStub(cached)) {
@@ -4306,7 +4308,7 @@ export async function parseProviderSources(
   // counted here so the monthly total never drops.
   // WSL orphans join them for every provider: their distro being stopped must
   // not drop the spend from the totals for the length of a shutdown (#1059).
-  if (provider.durableSources || Object.keys(section.files).some(isWslUncPath)) {
+  if (providerName !== 'claude' && (provider.durableSources || Object.keys(section.files).some(isWslUncPath))) {
     for (const [cachedPath, cachedFile] of Object.entries(section.files)) {
       if (!provider.durableSources && !isWslUncPath(cachedPath)) continue
       if (allDiscoveredFiles.has(cachedPath)) continue  // already counted above
