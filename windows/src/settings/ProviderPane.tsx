@@ -28,6 +28,7 @@ const GUIDANCE: Record<string, string> = {
   zai: 'Sign in with the Pi CLI, or set ZAI_API_KEY, then click Retry.',
   grok: 'Sign in with the Grok CLI, then click Retry.',
   clinepass: 'Set CLINEPASS_API_KEY, then click Retry.',
+  devin: 'Run the Devin CLI once to sign in, then click Retry.',
 }
 
 /// The mac's "How it works" sections, with the Windows paths. Every one of these is
@@ -43,6 +44,7 @@ const HOW_IT_WORKS: Record<string, string> = {
   zai: 'Z.ai quota uses a supplied API key if there is one, and otherwise the Z.ai login the Pi CLI keeps in %USERPROFILE%\\.pi\\agent\\auth.json.',
   grok: 'Grok Build quota reads %USERPROFILE%\\.grok\\auth.json, preferring the current OIDC scope over an older sign-in entry.',
   clinepass: 'ClinePass has no local login file, so the only credential is an API key.',
+  devin: 'Devin quota reads the plan status the Devin CLI caches in %USERPROFILE%\\.cache\\devin\\cli, read-only. Nothing is sent anywhere and no API key is used, so the numbers are as fresh as the CLI\'s last run.',
 }
 
 type Props = {
