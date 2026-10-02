@@ -231,7 +231,9 @@ import type { DateRange, ProjectSummary } from './types.js'
 // v43: Codex response-level token_usage_record repairs compacted/interrupted
 // responses and suppresses stale token_count twins. Counts can rise or fall,
 // so re-derive surviving days and allow the Codex slice to shrink once.
-export const DAILY_CACHE_VERSION = 43
+// v44: Claude queued_command human prompts split and reclassify turns. Calls
+// and tokens are unchanged, but settled category totals need re-derivation.
+export const DAILY_CACHE_VERSION = 44
 const MIN_SUPPORTED_VERSION = 28
 
 /// Providers whose per-day CALL COUNT means something different at
