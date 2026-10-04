@@ -243,7 +243,10 @@ import type { DateRange, ProjectSummary } from './types.js'
 // v47: Copilot chat-session journals read request-level promptTokens, repairing
 // missing input usage and input-only calls. Re-derive settled days from the
 // corrected session cache; calls and cost only rise.
-export const DAILY_CACHE_VERSION = 47
+// v48: #1620 Antigravity manage_task/search_web/read_url_content/invoke_subagent
+// reclassify turns. Calls and cost are unchanged, but settled antigravity
+// category totals need re-derivation.
+export const DAILY_CACHE_VERSION = 48
 const MIN_SUPPORTED_VERSION = 28
 
 /// Providers whose per-day CALL COUNT means something different at
