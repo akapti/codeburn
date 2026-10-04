@@ -14,7 +14,11 @@ A single SQLite database per platform:
 |---|---|
 | macOS | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` |
 | Windows | `%APPDATA%/Cursor/User/globalStorage/state.vscdb` |
-| Linux | `~/.config/Cursor/User/globalStorage/state.vscdb` |
+| Linux | `$XDG_CONFIG_HOME/Cursor/User/globalStorage/state.vscdb`, falling back to `~/.config/Cursor/User/globalStorage/state.vscdb` |
+
+Windows honors `APPDATA`, falling back to `AppData/Roaming` under the home directory when it is unset or empty. Workspace mappings come from the database's sibling `workspaceStorage` folder, so they follow the same redirected root. Explicit database overrides take precedence. Changes to `APPDATA` or `XDG_CONFIG_HOME` invalidate Cursor's session-cache fingerprint.
+
+The result cache also checks the resolved database path, so a different data root cannot reuse the previous database's calls just because its size and modification time match. The daily-cache migration backfills historical usage found under corrected editor roots.
 
 ## Storage format
 
@@ -27,7 +31,7 @@ The parser tries both and dedupes via `seenKeys`.
 
 ## Caching
 
-`src/cursor-cache.ts` writes `~/.cache/codeburn/cursor-results.v<n>.json` (override with `$CODEBURN_CACHE_DIR`). The unsuffixed `cursor-results.json` is left for older binaries; a matching-version copy is adopted once and never overwritten. The fingerprint is `dbMtimeMs + dbSizeBytes` of `state.vscdb`. Atomic write via temp + rename.
+`src/cursor-cache.ts` writes `~/.cache/codeburn/cursor-results.v<n>.json` (override with `$CODEBURN_CACHE_DIR`). The unsuffixed `cursor-results.json` is left for older binaries; a matching-version copy is adopted once and never overwritten. Cache identity includes the resolved database path and the combined modification time and size of `state.vscdb` and its WAL, when present. Atomic write via temp + rename.
 
 ## Deduplication
 
