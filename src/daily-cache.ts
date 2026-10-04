@@ -252,7 +252,9 @@ import type { DateRange, ProjectSummary } from './types.js'
 // read path's equal-call rule keeps them; the bump re-derives surviving days.
 // Call counts are unchanged, so no PENDING_REDERIVE_PROVIDER_VERSIONS entry is
 // needed.
-export const DAILY_CACHE_VERSION = 49
+// v50: Hermes uses its native Windows LOCALAPPDATA root; finalized days can
+// miss sessions there and must be re-derived after the default path is fixed.
+export const DAILY_CACHE_VERSION = 50
 const MIN_SUPPORTED_VERSION = 28
 
 /// Providers whose per-day CALL COUNT means something different at
