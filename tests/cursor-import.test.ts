@@ -8,6 +8,7 @@ import {
   CURSOR_CSV_HEADER,
   cursorImportPath,
   importCursorCsv,
+  importCursorCsvText,
   parseBoundary,
   parseCursorUsageCsv,
   removeCursorImport,
@@ -146,6 +147,89 @@ describe('importCursorCsv', () => {
     const saved = base + 2 * DAY + 23 * 3_600_000
     const s = await importCursorCsv(await writeCsv(ROWS, 'fresh.csv', saved), { to: base + 3 * DAY - 1 })
     expect(s.coverage.end).toBe(new Date(saved).toISOString())
+  })
+})
+
+describe('importCursorCsvText as a sync', () => {
+  const from = base
+  const stored = async () => JSON.parse(await readFile(cursorImportPath(), 'utf-8')) as { ranges: unknown[]; events: Array<{ hash: string; cost: string; source?: string }> }
+
+  it('dedupes synced rows against a manual import and tags only new rows', async () => {
+    await importCursorCsv(csvPath)
+    const extra = { date: iso(3, 8), model: 'auto', input: 7 }
+    const s = await importCursorCsvText(csv([...ROWS, extra]), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync' })
+    expect(s).toMatchObject({ changed: true, added: 1, skipped: 5, total: 6 })
+    const events = (await stored()).events
+    expect(events.filter(e => e.source === 'sync')).toHaveLength(1)
+    expect(events.filter(e => e.source === undefined)).toHaveLength(5)
+  })
+
+  it('a later sync replaces changed synced rows but never manually imported ones', async () => {
+    const manual = await writeCsv([{ date: iso(1, 3), model: 'auto', input: 11 }], 'manual.csv')
+    await importCursorCsv(manual)
+    await importCursorCsvText(csv(ROWS.slice(0, 2)), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync' })
+    const repriced = { ...ROWS[1]!, cost: '$2.50' }
+    const s = await importCursorCsvText(csv([ROWS[0]!, repriced]), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync' })
+    expect(s).toMatchObject({ changed: true, added: 1, skipped: 1, total: 3 })
+    const events = (await stored()).events
+    expect(events.map(e => e.cost).sort()).toEqual(['$2.50', 'Included', 'Included'])
+    expect(events.filter(e => e.source === undefined)).toHaveLength(1)
+
+    const again = await importCursorCsvText(csv([ROWS[0]!, repriced]), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync' })
+    expect(again).toMatchObject({ changed: false, added: 0 })
+  })
+
+  it('covers the window start to the newest event, apart from manual coverage', async () => {
+    await importCursorCsv(csvPath)
+    const s = await importCursorCsvText(csv([{ date: iso(1, 9), model: 'auto', input: 3 }, { date: iso(4, 15), model: 'auto', input: 4 }]), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync' })
+    expect(s!.coverage).toEqual({ start: new Date(from).toISOString(), end: iso(4, 15), inferred: false })
+    expect((await stored()).ranges).toEqual([
+      { start: `${dayOf(0)}T00:00:00.000Z`, end: `${dayOf(2)}T23:59:59.999Z` },
+      { start: new Date(from).toISOString(), end: iso(4, 15), source: 'sync' },
+    ])
+    expect(await importCursorCsvText(csv([]), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync' })).toBeNull()
+  })
+
+  it('drops synced rows from before the window instead of failing', async () => {
+    const s = await importCursorCsvText(csv([{ date: iso(-1), model: 'auto', input: 1 }, { date: iso(0, 5), model: 'auto', input: 2 }]), base + DAY, { from, to: base + DAY, source: 'sync' })
+    expect(s).toMatchObject({ added: 1, total: 1, firstEvent: iso(0, 5) })
+    expect(await importCursorCsvText(csv([{ date: iso(-1), model: 'auto', input: 1 }]), base + DAY, { from, to: base + DAY, source: 'sync' })).toBeNull()
+  })
+
+  it('a manual import claims a row a sync stored first, so a later sync cannot delete it', async () => {
+    const row = { date: iso(1, 3), model: 'auto', input: 11 }
+    await importCursorCsvText(csv([row]), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync', account: 'aaaa' })
+    const manual = await importCursorCsv(await writeCsv([row], 'manual.csv'))
+    expect(manual).toMatchObject({ changed: true, added: 0, skipped: 1, total: 1 })
+    expect((await stored()).events).toEqual([expect.not.objectContaining({ source: 'sync' })])
+    expect((await stored()).events[0]).not.toHaveProperty('account')
+
+    // Cursor revised the row: manual coverage wins, so only the manual row is priced.
+    await importCursorCsvText(csv([{ ...row, cost: '$0.10' }]), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync', account: 'aaaa' })
+    expect((await stored()).events.map(e => [e.cost, e.source])).toEqual([['Included', undefined]])
+  })
+
+  it('a synced row after the manual coverage end is still added', async () => {
+    const saved = base + DAY + 6 * 3_600_000
+    const manual = await importCursorCsv(await writeCsv([{ date: iso(1, 3), model: 'auto', input: 11 }], 'manual.csv', saved))
+    expect(manual.coverage.end).toBe(new Date(saved).toISOString())
+    const s = await importCursorCsvText(csv([{ date: iso(1, 5), model: 'auto', input: 1 }, { date: iso(1, 7), model: 'auto', input: 2 }, { date: iso(2, 1), model: 'auto', input: 3 }]), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync', account: 'aaaa' })
+    expect(s).toMatchObject({ added: 2, skipped: 1, total: 3 })
+    expect((await stored()).events.map(e => [e.date, e.source])).toEqual([[iso(1, 3), undefined], [iso(1, 7), 'sync'], [iso(2, 1), 'sync']])
+  })
+
+  it('keeps every account\'s synced rows and coverage apart; a sync replaces only its own account\'s rows', async () => {
+    const a = { date: iso(1, 9), model: 'auto', input: 3 }
+    await importCursorCsvText(csv([a]), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync', account: 'aaaa' })
+    const b = { date: iso(4, 15), model: 'auto', input: 4 }
+    const s = await importCursorCsvText(csv([b]), base + 30 * DAY, { from, to: base + 30 * DAY, source: 'sync', account: 'bbbb' })
+    expect(s).toMatchObject({ changed: true, added: 1, total: 2 })
+    const after = await stored() as { ranges: unknown[]; events: Array<{ source?: string; account?: string }> }
+    expect(after.events.map(e => [e.source, e.account])).toEqual([['sync', 'aaaa'], ['sync', 'bbbb']])
+    expect(after.ranges).toEqual([
+      { start: new Date(from).toISOString(), end: iso(1, 9), source: 'sync', account: 'aaaa' },
+      { start: new Date(from).toISOString(), end: iso(4, 15), source: 'sync', account: 'bbbb' },
+    ])
   })
 })
 
