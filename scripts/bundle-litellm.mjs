@@ -59,8 +59,8 @@ const MANUAL_ENTRIES = {
   // codex-equals-base assertion can hold. These are full-row mirrors, not
   // hand-picked rates: drop both entries entirely once LiteLLM ships the
   // codex SKUs, rather than editing them in place.
-  'gpt-5.6-codex':          [4e-6, 2e-5, 5e-6, 4e-7, null, { threshold: 272000, input: 8e-6, output: 3e-5, cacheWrite: 1e-5, cacheRead: 8e-7 }],
-  'gpt-5.6-codex-max':      [4e-6, 2e-5, 5e-6, 4e-7, null, { threshold: 272000, input: 8e-6, output: 3e-5, cacheWrite: 1e-5, cacheRead: 8e-7 }],
+  'gpt-5.6-codex':          [4e-6, 2e-5, 5e-6, 4e-7, 2, { threshold: 272000, input: 8e-6, output: 3e-5, cacheWrite: 1e-5, cacheRead: 8e-7 }],
+  'gpt-5.6-codex-max':      [4e-6, 2e-5, 5e-6, 4e-7, 2, { threshold: 272000, input: 8e-6, output: 3e-5, cacheWrite: 1e-5, cacheRead: 8e-7 }],
   // LiteLLM dropped `claude-opus-4` upstream (a refresh moves dropped ids to
   // the fallback tier), but the Cursor-style alias `claude-4-opus` resolves
   // against PRIMARY rows - without this pin the bare id falls to the
@@ -83,6 +83,39 @@ const entries = Object.entries(data).filter(([k]) => k !== 'sample_spec')
 // from the key suffix (272k -> 272000) because LiteLLM carries no numeric
 // threshold field (#1076). Mirrored in src/models.ts parseLiteLLMEntry.
 const TIER_KEY_RE = /^(input_cost_per_token|output_cost_per_token|cache_read_input_token_cost|cache_creation_input_token_cost)_above_(\d+)k_tokens$/
+
+// OpenAI's priority processing tier ships as explicit `<rate>_priority` keys
+// beside the standard ones (and `_above_<n>k_tokens_priority` for gpt-5.6's
+// long-context tier). Codex's Fast speed setting bills through it (#1616), so
+// slot 5 falls back to that ratio when the row carries no
+// `provider_specific_entry.fast`. Derived only where every bucket the row
+// prices agrees on one ratio — models without priority keys, or rows whose
+// ratios disagree (azure/gpt-5.5: 2.5x base, 2x above 272k), stay null (1x).
+// A tier without its own priority keys (gpt-5.4, gpt-5.5) gets `fast: 1` so it
+// stays at standard tier rates: OpenAI quotes no Fast long-context price there.
+// Never a hand-picked number. Mirrored in src/models.ts parseLiteLLMEntry.
+const PRIORITY_KEY_SUFFIX = '_priority'
+const MAX_DERIVED_FAST_MULTIPLIER = 100
+
+function priorityMultiplierOf(entry) {
+  const ratios = []
+  let inputRatio
+  let outputRatio
+  for (const [key, value] of Object.entries(entry)) {
+    if (!key.endsWith(PRIORITY_KEY_SUFFIX)) continue
+    const base = entry[key.slice(0, -PRIORITY_KEY_SUFFIX.length)]
+    if (typeof value !== 'number' || typeof base !== 'number') continue
+    if (!Number.isFinite(value) || !Number.isFinite(base) || value <= 0 || base <= 0) continue
+    const ratio = value / base
+    if (key === 'input_cost_per_token_priority') inputRatio = ratio
+    else if (key === 'output_cost_per_token_priority') outputRatio = ratio
+    ratios.push(ratio)
+  }
+  if (inputRatio === undefined || outputRatio === undefined) return null
+  const agreed = ratios.every((r) => Math.abs(r - inputRatio) <= 1e-9 * Math.max(r, inputRatio))
+  // Rounded to 4 decimals so division noise (1.7999999999999998) never ships.
+  return agreed && inputRatio <= MAX_DERIVED_FAST_MULTIPLIER ? Math.round(inputRatio * 1e4) / 1e4 : null
+}
 
 function tierOf(entry) {
   // Rates are read ONLY from the largest threshold a model carries, so a
@@ -112,7 +145,13 @@ function toVal(entry) {
   const inp = entry.input_cost_per_token
   const out = entry.output_cost_per_token
   if (inp == null || out == null) return null
-  return [inp, out, entry.cache_creation_input_token_cost ?? null, entry.cache_read_input_token_cost ?? null, entry.provider_specific_entry?.fast ?? null, tierOf(entry)]
+  const explicitFast = entry.provider_specific_entry?.fast
+  const priorityFast = explicitFast == null ? priorityMultiplierOf(entry) : null
+  const tier = tierOf(entry)
+  if (tier && priorityFast !== null && !Object.keys(entry).some((k) => k.endsWith(`_above_${tier.threshold / 1000}k_tokens${PRIORITY_KEY_SUFFIX}`))) {
+    tier.fast = 1
+  }
+  return [inp, out, entry.cache_creation_input_token_cost ?? null, entry.cache_read_input_token_cost ?? null, explicitFast ?? priorityFast, tier]
 }
 
 // Pass 1: direct entries (no prefix) get priority

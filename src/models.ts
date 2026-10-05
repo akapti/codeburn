@@ -39,6 +39,8 @@ export type LongContextTier = {
   outputCostPerToken: number
   cacheWriteCostPerToken?: number
   cacheReadCostPerToken?: number
+  /// Replaces the base fastMultiplier above the threshold; absent inherits it.
+  fastMultiplier?: number
 }
 
 /// Providers whose reported `reasoningTokens` are a SUBSET of `outputTokens`
@@ -81,7 +83,7 @@ type LiteLLMEntry = {
 // provider_specific_entry.fast so new models pick it up automatically — no
 // hand-maintained per-model table. The optional sixth slot carries the
 // vendor's long-context tier; older bundles without it parse unchanged.
-type SnapshotTier = { threshold: number, input: number, output: number, cacheWrite: number | null, cacheRead: number | null }
+type SnapshotTier = { threshold: number, input: number, output: number, cacheWrite: number | null, cacheRead: number | null, fast?: number }
 type SnapshotEntry = [number, number, number | null, number | null, (number | null)?, (SnapshotTier | null)?]
 
 const LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
@@ -95,7 +97,10 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 // the on-disk LiteLLM cache, not just the on-disk cache itself.
 // 4: calculateCost bills an implicit cache-write rate as input for non-Anthropic models.
 // 5: longContextTier rides ModelCosts, so a cached costs object is tier-aware (#1076).
-export const CACHE_SCHEMA_VERSION = 5
+// 6: fastMultiplier is now derived from LiteLLM's `<rate>_priority` keys when the
+// source publishes no `provider_specific_entry.fast` (#1616), so a cached costs
+// object can carry a multiplier the pre-fix fetch left at 1.
+export const CACHE_SCHEMA_VERSION = 6
 const WEB_SEARCH_COST = 0.01
 const ONE_HOUR_CACHE_WRITE_MULTIPLIER_FROM_FIVE_MINUTE_RATE = 1.6
 
@@ -138,6 +143,7 @@ function buildCosts(
       outputCostPerToken: tier.output,
       ...(tier.cacheWrite !== null ? { cacheWriteCostPerToken: tier.cacheWrite } : {}),
       ...(tier.cacheRead !== null ? { cacheReadCostPerToken: tier.cacheRead } : {}),
+      ...(tier.fast !== undefined ? { fastMultiplier: tier.fast } : {}),
     } } : {}),
   }
 }
@@ -184,6 +190,7 @@ export function tieredCostsFor(model: string, baseCosts: ModelCosts, promptToken
       outputCostPerToken: tier.outputCostPerToken,
       ...(tier.cacheWriteCostPerToken !== undefined ? { cacheWriteCostPerToken: tier.cacheWriteCostPerToken } : {}),
       ...(tier.cacheReadCostPerToken !== undefined ? { cacheReadCostPerToken: tier.cacheReadCostPerToken } : {}),
+      ...(tier.fastMultiplier !== undefined ? { fastMultiplier: tier.fastMultiplier } : {}),
     }
   }
   return baseCosts
@@ -282,6 +289,52 @@ function safePerTokenRate(n: number | undefined): number | null {
 // because the bundler is a standalone .mjs script.
 const TIER_KEY_RE = /^(input_cost_per_token|output_cost_per_token|cache_read_input_token_cost|cache_creation_input_token_cost)_above_(\d+)k_tokens$/
 
+// OpenAI bills its priority processing tier through explicit `<rate>_priority`
+// keys sat beside the standard ones (input/output/cache-read/cache-write, plus
+// the `_above_<n>k_tokens_priority` variants for gpt-5.6's long-context tier).
+// Codex's Fast speed setting runs on that tier (#1616), so those keys are where
+// its multiplier comes from — LiteLLM publishes none as a
+// `provider_specific_entry.fast` for OpenAI models. Derived, never invented:
+// only a ratio the source publishes for EVERY bucket it prices is used, so a
+// model with no priority keys (gpt-5-codex, gpt-5.1-codex) or one whose ratios
+// disagree between buckets (azure/gpt-5.5: 2.5x base, 2x above 272k) stays at
+// 1x. Where the tier publishes priority rates they join the same agreement
+// check, so the one multiplier prices both regimes (gpt-5.6). Where it publishes
+// none (gpt-5.4, gpt-5.5) OpenAI quotes no Fast long-context price, so the tier
+// carries fast 1 and stays at its standard rates rather than a guessed product.
+// `provider_specific_entry.fast` (Anthropic's own multiplier) always wins where
+// the source ships one and is left to cover the tier as before.
+const PRIORITY_KEY_SUFFIX = '_priority'
+// Generous bound: the largest ratio any vendor actually publishes is 2.5x, so
+// anything past this is a corrupted or hostile upstream row, not a price.
+const MAX_DERIVED_FAST_MULTIPLIER = 100
+
+function priorityMultiplierOf(entry: LiteLLMEntry): number | null {
+  const record = entry as Record<string, unknown>
+  const ratios: number[] = []
+  let inputRatio: number | undefined
+  let outputRatio: number | undefined
+  for (const [key, value] of Object.entries(record)) {
+    if (!key.endsWith(PRIORITY_KEY_SUFFIX)) continue
+    const base = record[key.slice(0, -PRIORITY_KEY_SUFFIX.length)]
+    if (typeof value !== 'number' || typeof base !== 'number') continue
+    if (!Number.isFinite(value) || !Number.isFinite(base) || value <= 0 || base <= 0) continue
+    const ratio = value / base
+    if (key === 'input_cost_per_token_priority') inputRatio = ratio
+    else if (key === 'output_cost_per_token_priority') outputRatio = ratio
+    ratios.push(ratio)
+  }
+  // No priority input AND output rate means there is no priority price to
+  // scale the bill by, whatever stray priority keys the row carries.
+  if (inputRatio === undefined || outputRatio === undefined) return null
+  // "Within rounding": published ratios agree exactly in the JSON but can pick
+  // up a few ulps in the division (2.5 vs 2.4999999999999996), so compare
+  // relatively rather than for bitwise equality.
+  const agreed = ratios.every(r => Math.abs(r - inputRatio!) <= 1e-9 * Math.max(r, inputRatio!))
+  // Rounded to 4 decimals so division noise (1.7999999999999998) never ships.
+  return agreed && inputRatio <= MAX_DERIVED_FAST_MULTIPLIER ? Math.round(inputRatio * 1e4) / 1e4 : null
+}
+
 function tierOfLiteLLMEntry(entry: LiteLLMEntry): SnapshotTier | null {
   // Rates are read ONLY from the largest threshold a model carries, mirroring
   // scripts/bundle-litellm.mjs tierOf, so a two-tier entry can never mix a
@@ -316,13 +369,19 @@ export function parseLiteLLMEntry(entry: LiteLLMEntry): ModelCosts | null {
   const inputCost = safePerTokenRate(entry.input_cost_per_token)
   const outputCost = safePerTokenRate(entry.output_cost_per_token)
   if (inputCost === null || outputCost === null) return null
+  const explicitFast = entry.provider_specific_entry?.fast
+  const priorityFast = explicitFast == null ? priorityMultiplierOf(entry) : null
+  const tier = tierOfLiteLLMEntry(entry)
+  if (tier && priorityFast !== null && !Object.keys(entry).some(k => k.endsWith(`_above_${tier.threshold / 1000}k_tokens${PRIORITY_KEY_SUFFIX}`))) {
+    tier.fast = 1
+  }
   return buildCosts(
     inputCost,
     outputCost,
     safePerTokenRate(entry.cache_creation_input_token_cost),
     safePerTokenRate(entry.cache_read_input_token_cost),
-    entry.provider_specific_entry?.fast,
-    tierOfLiteLLMEntry(entry),
+    explicitFast ?? priorityFast,
+    tier,
   )
 }
 
