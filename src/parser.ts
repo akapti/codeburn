@@ -5,7 +5,7 @@ import { createHash } from 'crypto'
 import { performance } from 'node:perf_hooks'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { FS_SCAN_CONCURRENCY, mapWithConcurrency, readSessionLines } from './fs-utils.js'
-import { billableOutputTokens, calculateCost, calculateLocalModelSavings, getShortModelName, modelRowKey, pricingModelAt, isProxiedPath, getProxyPathsConfigHash, getModelAliasesConfigHash, getPriceOverridesConfigHash, getLocalModelSavingsConfigHash, recordedCostFallback } from './models.js'
+import { billableOutputTokens, calculateCost, calculateLocalModelSavings, getShortModelName, modelRowKey, pricingModelAt, isProxiedPath, getProxyPathsConfigHash, getModelAliasesConfigHash, getPriceOverridesConfigHash, getLocalModelSavingsConfigHash, recordedCostFallback, getModelRoute } from './models.js'
 import { resolveSubagentAttribution, sessionIdentity } from './sessions-report.js'
 import { normalizeContentBlocks, flatSlice, flatString } from './content-utils.js'
 import { discoverAllSessions, discoverAllSessionsWithFailures, getProvider } from './providers/index.js'
@@ -4221,7 +4221,7 @@ export async function parseProviderSources(
 
   // Query-time: derive SessionSummary from all cached turns.
   // Uses seenKeys (shared across providers) for cross-provider dedup.
-  const sessionMap = new Map<string, { project: string; projectPath?: string; workingDirectory?: string; turns: ClassifiedTurn[]; prLinks?: Set<string>; title?: string; lineage?: SessionLineage; agentName?: string; agentStartedAt?: string }>()
+  const sessionMap = new Map<string, { project: string; projectPath?: string; workingDirectory?: string; turns: ClassifiedTurn[]; prLinks?: Set<string>; title?: string; lineage?: SessionLineage; agentName?: string; agentStartedAt?: string; source?: SessionSourceMetadata }>()
 
   for (const source of servedSources) {
     const cachedFile = section.files[source.path]
@@ -4233,6 +4233,18 @@ export async function parseProviderSources(
       }
       continue
     }
+    const sourceMetadata: SessionSourceMetadata | undefined = providerName === 'claude' &&
+      source.sourceId &&
+      source.sourceLabel &&
+      source.sourcePath &&
+      source.sourceKind
+      ? {
+          id: source.sourceId,
+          label: source.sourceLabel,
+          path: source.sourcePath,
+          kind: source.sourceKind,
+        }
+      : undefined
 
     for (const rawTurn of cachedFile.turns) {
       const turn = serveTurn(rawTurn)
@@ -4287,6 +4299,7 @@ export async function parseProviderSources(
         if (!existing.lineage && cachedFile.lineage) existing.lineage = cachedFile.lineage
         if (!existing.agentName && cachedFile.agentName) existing.agentName = cachedFile.agentName
         if (!existing.agentStartedAt && cachedFile.agentStartedAt) existing.agentStartedAt = cachedFile.agentStartedAt
+        if (!existing.source && sourceMetadata) existing.source = sourceMetadata
       } else {
         sessionMap.set(key, {
           project,
@@ -4298,6 +4311,7 @@ export async function parseProviderSources(
           ...(cachedFile.lineage ? { lineage: cachedFile.lineage } : {}),
           ...(cachedFile.agentName ? { agentName: cachedFile.agentName } : {}),
           ...(cachedFile.agentStartedAt ? { agentStartedAt: cachedFile.agentStartedAt } : {}),
+          ...(sourceMetadata ? { source: sourceMetadata } : {}),
         })
       }
     }
@@ -4505,12 +4519,12 @@ export async function parseProviderSources(
   // (first projectPath wins) before mergeProjectsByCrossProviderKey could see
   // distinct abs identities.
   const projectMap = new Map<string, { project: string; projectPath?: string; sessions: SessionSummary[] }>()
-  for (const [key, { project, projectPath, workingDirectory, turns, prLinks, title, lineage, agentName, agentStartedAt }] of sessionMap) {
+  for (const [key, { project, projectPath, workingDirectory, turns, prLinks, title, lineage, agentName, agentStartedAt, source }] of sessionMap) {
     const sessionId = key.split(':')[1] ?? key
     const assembledTurns = providerName === 'copilot'
       ? foldCopilotSupplementaryTurns(sessionId, turns, copilotRecon?.supplementaryStoreKeys)
       : turns
-    const session = buildSessionSummary(sessionId, project, assembledTurns)
+    const session = buildSessionSummary(sessionId, project, assembledTurns, undefined, source)
     const explicitLinks = new Set(assembledTurns.flatMap(turn => turn.prRefs ?? []))
     for (const link of prLinks ?? []) explicitLinks.add(link)
     if (explicitLinks.size) {
@@ -5457,6 +5471,88 @@ export function filterProjectsByCall(projects: ProjectSummary[], keep: (call: Pa
   return filtered.sort((a, b) => b.totalCostUSD - a.totalCostUSD)
 }
 
+const CLAUDE_LEDGER_MATCH_WINDOW_MS = 30 * 1000
+
+function claudeLedgerModelIdentity(model: string): { base: string; route?: string } {
+  const routed = getModelRoute(model)
+  return {
+    base: (routed?.baseModel ?? model).toLowerCase(),
+    ...(routed?.variant ? { route: routed.variant.toLowerCase() } : {}),
+  }
+}
+
+function claudeLedgerCallMatchesTranscript(ledgerCall: ParsedApiCall, transcriptCall: ParsedApiCall): boolean {
+  const ledgerModel = claudeLedgerModelIdentity(ledgerCall.model)
+  const transcriptModel = claudeLedgerModelIdentity(transcriptCall.model)
+  if (ledgerModel.base !== transcriptModel.base) return false
+  // Matching normalizes only the Bedrock wrapper. Pricing still receives each
+  // call's raw model id. A bare transcript model can be paired with the routed
+  // ledger id; when both sides carry an explicit route, keep different
+  // geographic SKUs separate.
+  if (ledgerModel.route && transcriptModel.route && ledgerModel.route !== transcriptModel.route) return false
+
+  const ledgerUsage = ledgerCall.usage
+  const transcriptUsage = transcriptCall.usage
+  if (
+    ledgerUsage.inputTokens !== transcriptUsage.inputTokens ||
+    ledgerUsage.outputTokens !== transcriptUsage.outputTokens ||
+    ledgerUsage.cacheCreationInputTokens !== transcriptUsage.cacheCreationInputTokens ||
+    ledgerUsage.cacheReadInputTokens !== transcriptUsage.cacheReadInputTokens ||
+    ledgerUsage.webSearchRequests !== transcriptUsage.webSearchRequests
+  ) {
+    return false
+  }
+
+  const ledgerTimestamp = Date.parse(ledgerCall.timestamp)
+  const transcriptTimestamp = Date.parse(transcriptCall.timestamp)
+  if (!Number.isFinite(ledgerTimestamp) || !Number.isFinite(transcriptTimestamp)) return false
+  return Math.abs(ledgerTimestamp - transcriptTimestamp) <= CLAUDE_LEDGER_MATCH_WINDOW_MS
+}
+
+/// Claude Desktop 3p writes a durable usage-ledger record alongside a Claude
+/// transcript. The two records have different keys, so the normal parser
+/// deduplication cannot see that they are the same request. Keep the ledger
+/// record as the durable billing source and remove only a transcript call with
+/// a one-to-one token/model/timestamp match.
+function deduplicateClaudeDesktopTranscripts(
+  transcriptProjects: ProjectSummary[],
+  ledgerProjects: ProjectSummary[],
+): ProjectSummary[] {
+  const ledgerCalls = ledgerProjects.flatMap(project =>
+    project.sessions.flatMap(session =>
+      session.turns.flatMap(turn => turn.assistantCalls)
+    )
+  )
+  if (ledgerCalls.length === 0) return transcriptProjects
+
+  const matchedLedgerIndexes = new Set<number>()
+  return filterProjectsByCall(transcriptProjects, transcriptCall => {
+    let bestIndex = -1
+    let bestDistance = Number.POSITIVE_INFINITY
+    let tied = false
+
+    for (let i = 0; i < ledgerCalls.length; i++) {
+      if (matchedLedgerIndexes.has(i)) continue
+      const ledgerCall = ledgerCalls[i]!
+      if (!claudeLedgerCallMatchesTranscript(ledgerCall, transcriptCall)) continue
+      const distance = Math.abs(Date.parse(ledgerCall.timestamp) - Date.parse(transcriptCall.timestamp))
+      if (distance < bestDistance) {
+        bestIndex = i
+        bestDistance = distance
+        tied = false
+      } else if (distance === bestDistance) {
+        tied = true
+      }
+    }
+
+    // An ambiguous match is safer left in the transcript source than silently
+    // removing an unrelated request.
+    if (bestIndex < 0 || tied) return true
+    matchedLedgerIndexes.add(bestIndex)
+    return false
+  })
+}
+
 export function filterProjectsByDateRange(projects: ProjectSummary[], dateRange: DateRange): ProjectSummary[] {
   const sliceStartMs = dateRange.start.getTime()
   const filtered: ProjectSummary[] = []
@@ -6235,6 +6331,7 @@ async function runParseInner(
           saveProgress,
           readOnly,
         )
+        claudeProjects = deduplicateClaudeDesktopTranscripts(claudeProjects, ledgerProjects)
         claudeProjects.push(...ledgerProjects)
       }
       if (claudeSources.length > 0) emitScanProgress({ kind: 'provider', provider: 'claude', state: 'done', files: claudeSources.length })

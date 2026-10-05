@@ -318,7 +318,8 @@ function createCoworkLedgerParser(
         }
 
         const record = ledgerObject(parsed)
-        if (!record || record['surface'] !== 'cowork') continue
+        const surface = record?.['surface']
+        if (!record || (surface !== 'cowork' && surface !== 'code')) continue
 
         const sessionId = typeof record['sessionId'] === 'string' ? record['sessionId'] : ''
         const timestamp = ledgerTimestamp(record['ts'])
@@ -376,10 +377,11 @@ function createCoworkLedgerParser(
             cachedInputTokens: cacheReadInputTokens,
             reasoningTokens: 0,
             webSearchRequests,
-            costUSD: recordedCost ?? estimatedCost,
-            ...(recordedCost !== undefined
-              ? { costFromBilling: true }
-              : { costIsEstimated: true }),
+            // Keep the ledger's dollar amount only as a fallback for a model
+            // CodeBurn cannot price. Known models must use CodeBurn's pricing
+            // and overrides so cached usage can be repriced later.
+            costUSD: estimatedCost,
+            ...(recordedCost !== undefined ? { fallbackCostUSD: recordedCost } : {}),
             tools: [],
             bashCommands: [],
             skills: [],
@@ -389,7 +391,7 @@ function createCoworkLedgerParser(
             deduplicationKey,
             userMessage: '',
             sessionId,
-            project: source.project,
+            project: surface === 'code' ? 'Claude Code' : 'Claude Cowork',
             turnId: `${timestamp}:${lineNumber}`,
           }
         }
