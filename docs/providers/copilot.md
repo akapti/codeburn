@@ -22,11 +22,51 @@ VS Code, VS Code Insiders and VSCodium storage roots honor `APPDATA` on Windows 
 5. **CLI session store:** `~/.copilot/session-store.db` (see the session-store section). One `assistant_usage_events` row per API request — the authoritative input/cache source for CLI and GitHub desktop-app sessions.
 6. **JetBrains IDE sessions:** `~/.config/github-copilot/<ide>/<kind>/<storeId>/copilot-*-nitrite.db` (see the JetBrains section). Covers IntelliJ IDEA, PyCharm, RubyMine, etc.
 
+Microsoft 365 Copilot (Office, Teams) and Copilot in the browser are not supported: they leave no local usage data.
+
 ## Storage format
 
 JSONL in the first three locations (schemas differ; the parser switches by source type / event shape), a SQLite DB for the OTel source, and a Nitrite (H2 MVStore) `.db` for the JetBrains source. VS Code core chat sessions use a delta journal: `kind:0` sets the root object, `kind:1` writes a value at path `k`, and `kind:2` appends items to an array path.
 
 Core chat-session journals read input from `result.metadata.promptTokens`, falling back to the request's `promptTokens` when metadata has no positive count. Output keeps the existing `result.metadata.outputTokens` then request `completionTokens` precedence. These fields are alternatives, never summed. Input-only requests count; rows without reported usage remain skipped rather than estimated from text. The request-level prompt count is the value VS Code recorded, not a reconstructed total across an agent loop's model calls.
+
+## VS Code agent host (Copilot CLI engine)
+
+Current VS Code runs Copilot Chat's agent through the Copilot CLI engine. Its
+sessions land in `~/.copilot/session-state/<sessionId>/events.jsonl` like CLI
+sessions (`workspace.yaml` says `client_name: vscode-agent-host`; its `cwd`
+names the project), and write no `assistant_usage_events` rows. Copilot CLI
+1.0.8x writes the same shape.
+
+- **No per-turn tokens.** `assistant.message` has no `outputTokens`, and
+  `assistant.turn_start` / `turn_end` carry only ids. Each `assistant.message`
+  is one model request and counts as one call with zero tokens (`apiCallId`
+  is per request; 10 messages = `requests.count` 10 on the real session).
+- **Exact after the session ends.** The `session.shutdown` rollup is the only
+  token record. When no `assistant.message` in a leg carried `outputTokens`, the
+  rollup call carries that leg's output as well as input and cache. It also
+  carries `modelMetrics[model].totalNanoAiu` (per-leg delta) as `nanoAiu`, which
+  makes the session's Copilot credits exact. `totalNanoAiu` is a running bill
+  that does not reset at compaction, so its delta has its own sentinel.
+  Resumed and compacted sessions are covered by a synthetic test only; no real
+  one was available.
+  On the real test session (gpt-5-mini) the token cost at list rates matched
+  `totalNanoAiu` to the last digit.
+- **Live sessions.** Token counts and credits for VS Code Copilot sessions appear
+  when the session ends. Until then the requests show as calls with no tokens
+  and $0. `session.usage_checkpoint` events carry a running `totalNanoAiu` but
+  no tokens; they are not read, so credits come from one place only.
+- **With session-store rows** (CLI 1.0.8x), the rows replace the rollup but
+  carry output only for compaction requests, so the leg's output serves through
+  its residual (rollup output minus compaction-row output). In a compacted
+  session the rollup's counters reset at the compaction, so output from before
+  it is recorded nowhere locally and cannot be counted. Credits stay exact.
+- **Not read.** VS Code's `agentSessionData/*/session.db`,
+  `globalStorage/agent-host.db` and `globalStorage/github.copilot-chat/session-store.db`.
+  `session.db` `turn_usage` does hold per-interaction totals
+  (`_meta.turnTokenTotals`, `_meta.copilotUsage.totalNanoAiu`) while the session
+  is open, a possible future live source; its top-level token fields describe
+  only the interaction's last request.
 
 ## OpenTelemetry (OTel) source
 
@@ -148,9 +188,10 @@ see the #927 ruling in `src/session-cache.ts`).
   Copilot AI credits (`codeburn plan set copilot-pro`). Billing-grade cost
   rewrite of every report is still upstream #890.
 
-  These CLI session-store rows are the **only** local source that carries an
-  exact credit figure. VS Code chat sessions and transcripts, the OTel
-  `agent-traces.db`, JetBrains stores and the CLI session-state JSONL never do,
+  These CLI session-store rows and the `session.shutdown` rollup's
+  `totalNanoAiu` (CLI and VS Code agent host) are the only local sources that
+  carry an exact credit figure. VS Code chat sessions and transcripts, the OTel
+  `agent-traces.db` and JetBrains stores never do,
   so on a typical machine most requests have no exact figure at all (#1199).
   Everything unrated is estimated instead: the request's tokens priced at the
   model's listed API rate, converted at 1 credit = $0.01. That is exactly how
@@ -169,7 +210,10 @@ see the #927 ruling in `src/session-cache.ts`).
   (`~9800 / 20000 AI Credits (estimated; 4 of 473 requests carry GitHub's exact
   figure)`), and `codeburn status --format json | jq .plans.copilot` carries
   `spentCredits` (exact only), `estimatedCredits` (exact plus estimate),
-  `creditRatedCalls` / `creditUnratedCalls`, `creditsIncomplete` and a plain
+  `creditRatedCalls` / `creditUnratedCalls` (requests by behavioral weight; a
+  session with any exact figure counts all its requests as rated, so a
+  crash-tailed session's last requests may be unrated yet counted as rated),
+  `creditsIncomplete` and a plain
   `creditsNote`. The bar and `percentUsed` follow `estimatedCredits` while any
   request is unrated, and the exact figure once every request carries one.
   For the live authoritative number, use the menubar's GitHub quota endpoint
