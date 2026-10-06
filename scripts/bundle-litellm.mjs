@@ -207,6 +207,32 @@ const completeness = (val) => (val[2] != null ? 1 : 0) + (val[3] != null ? 1 : 0
 // purely by JSON key order (#1134: the openrouter row held the
 // `deepseek/deepseek-v4-pro` slot at ~40% under official peak pricing).
 const entryNames = new Set(Object.keys(data))
+// Which prefixed row claims an absent bare key: the model maker's own row
+// (`xai/grok-4.6`) over any reseller's (`azure_ai/grok-4.6`), whatever the JSON
+// order, even at $0 (Gemma is free on Google's own API). Among the other rows
+// a $0/$0 one yields to any priced one (the `codestral/` free-beta rows priced
+// `codestral-latest` at nothing); otherwise the first row claims, as before.
+// The key keeps the position its first claimant gave it. Mirrored in
+// src/models.ts.
+const MAKER_PREFIXES = new Set([
+  'xai', 'mistral', 'cohere', 'anthropic', 'openai', 'gemini', 'deepseek', 'moonshot',
+  'zai', 'minimax', 'ai21', 'perplexity', 'dashscope', 'meta_llama', 'xiaomi_mimo',
+])
+// Two segments only: `perplexity/openai/gpt-5.6-sol` is Perplexity reselling.
+const isMaker = (name) => name.split('/').length === 2 && MAKER_PREFIXES.has(name.split('/')[0])
+const isFree = (val) => val[0] === 0 && val[1] === 0
+const bareClaims = new Map()
+const makerClaimed = new Set()
+for (const [name, entry] of [...entries.filter(([n]) => isMaker(n)), ...entries.filter(([n]) => !isMaker(n))]) {
+  if (!name.includes('/')) continue
+  const stripped = name.replace(/^[^/]+\//, '')
+  if (entryNames.has(stripped)) continue
+  const val = toVal(entry)
+  if (!val) continue
+  const prev = bareClaims.get(stripped)
+  if (!prev || (!makerClaimed.has(stripped) && isFree(prev) && !isFree(val))) bareClaims.set(stripped, val)
+  if (isMaker(name)) makerClaimed.add(stripped)
+}
 for (const [name, entry] of entries) {
   if (!name.includes('/')) continue
   const val = toVal(entry)
@@ -222,8 +248,7 @@ for (const [name, entry] of entries) {
   // verbatim (val may add slots, never change them). Guarantees no rate ever
   // changes across a refresh; only missing slots fill. The completeness-wins
   // version re-priced 43 input/output and 34 cache rates by swapping in a
-  // different upstream row (grok-3 3/15 -> 1.25/2.5, mistral-large-latest
-  // 8/24 -> 0.5/1.5). Slot 5 (the tier object) stays out of the guard: it is
+  // different upstream row (grok-3 3/15 -> 1.25/2.5). Slot 5 (the tier object) stays out of the guard: it is
   // built fresh per row, so a reference compare is always false and would
   // veto fills main performs (it silently dropped the azure cache-read fill
   // for gpt-5.4-pro-class rows); and since the replacement only fires when
@@ -236,7 +261,7 @@ for (const [name, entry] of entries) {
     && (prev[2] == null || cand[2] === prev[2])
     && (prev[3] == null || cand[3] === prev[3])
   if (!existing) {
-    if (!entryNames.has(stripped)) snapshot[stripped] = val
+    if (bareClaims.has(stripped)) snapshot[stripped] = bareClaims.get(stripped)
     continue
   }
   if (completeness(val) > completeness(existing) && fillsOnly(val, existing)) snapshot[stripped] = val
