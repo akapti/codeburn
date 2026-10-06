@@ -295,7 +295,10 @@ import type { DateRange, ProjectSummary } from './types.js'
 // created_at move from the file-mtime day to their first step's day, so a
 // session that crossed midnight moves calls to an earlier day, and antigravity
 // joins PENDING_REDERIVE_PROVIDER_VERSIONS at 59.
-export const DAILY_CACHE_VERSION = 59
+// v60: Mistral Vibe 2.26 Unified Harness sessions (`unified/<id>/`) are read;
+// days finalized while they were skipped re-derive. Calls only rise, so no
+// PENDING_REDERIVE_PROVIDER_VERSIONS entry is needed.
+export const DAILY_CACHE_VERSION = 60
 const MIN_SUPPORTED_VERSION = 28
 
 /// Providers whose per-day CALL COUNT means something different at

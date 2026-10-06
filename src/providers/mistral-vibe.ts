@@ -7,6 +7,7 @@ import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import type { ProbeRoot, Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 import { safeNumber } from '../parser.js'
+import { readUnifiedVibeCalls } from './mistral-vibe-unified.js'
 
 const METADATA_FILENAME = 'meta.json'
 const MESSAGES_FILENAME = 'messages.jsonl'
@@ -161,6 +162,13 @@ async function discoverSessionDirs(root: string): Promise<string[]> {
   }
 
   return sessionDirs
+}
+
+// Vibe resolves an unpinned session to config.toml's top-level active_model.
+async function configuredModel(sessionsDir: string): Promise<string> {
+  const raw = await readSessionFile(join(sessionsDir, '..', '..', 'config.toml'))
+  const topLevel = raw?.split(/^\s*\[/m)[0] ?? ''
+  return topLevel.match(/^\s*active_model\s*=\s*["']([^"']+)["']/m)?.[1] ?? DEFAULT_MODEL
 }
 
 function activeModelConfig(metadata: VibeMetadata): VibeModelConfig | null {
@@ -428,10 +436,30 @@ export function createMistralVibeProvider(sessionsDir?: string): Provider {
         })
       }
 
+      const unifiedDir = join(dir, 'unified')
+      for (const entry of (await readdir(unifiedDir).catch(() => [])).sort()) {
+        const sessionDir = join(unifiedDir, entry)
+        const currentPath = join(sessionDir, 'CURRENT')
+        if (!await isFile(currentPath)) continue
+        const metadata = await readJsonFile<VibeMetadata>(join(sessionDir, METADATA_FILENAME))
+        const cwd = metadata?.environment?.working_directory
+        sources.push({ path: currentPath, project: cwd ? basename(cwd) : entry, provider: 'mistral-vibe' })
+      }
+
       return sources
     },
 
     createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+      if (basename(source.path) === 'CURRENT') {
+        return { async *parse() {
+          const defaultModel = await configuredModel(dir)
+          for (const call of await readUnifiedVibeCalls(source.path, name => toolNameMap[name] ?? name, defaultModel)) {
+            if (seenKeys.has(call.deduplicationKey)) continue
+            seenKeys.add(call.deduplicationKey)
+            yield call
+          }
+        } }
+      }
       return createParser(source, seenKeys)
     },
   }
