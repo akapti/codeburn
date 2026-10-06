@@ -288,7 +288,14 @@ import type { DateRange, ProjectSummary } from './types.js'
 // tag instead of the session's last write. Settled days re-derive; a session
 // that crossed midnight moves calls to an earlier day, so cursor-agent joins
 // PENDING_REDERIVE_PROVIDER_VERSIONS at 58.
-export const DAILY_CACHE_VERSION = 58
+// v59: Antigravity reads cache-read tokens from gen_metadata and the RPC usage,
+// and the standalone app's placeholder-only model (MODEL_PLACEHOLDER_M16, stored
+// as "gemini-pro-default") prices as gemini-3.1-pro-high instead of $0, with
+// the above-200k tier. Cache read and cost only rise. Standalone rows without
+// created_at move from the file-mtime day to their first step's day, so a
+// session that crossed midnight moves calls to an earlier day, and antigravity
+// joins PENDING_REDERIVE_PROVIDER_VERSIONS at 59.
+export const DAILY_CACHE_VERSION = 59
 const MIN_SUPPORTED_VERSION = 28
 
 /// Providers whose per-day CALL COUNT means something different at
@@ -331,6 +338,9 @@ const PENDING_REDERIVE_PROVIDER_VERSIONS: Readonly<Record<string, number>> = {
   devin: 46,
   // 58: transcript turns moved from the session's last write to prompt time.
   'cursor-agent': 58,
+  // 59: standalone rows without created_at moved from the file mtime to the
+  // first step's time.
+  antigravity: 59,
 }
 
 function providersPendingRederiveFrom(fromVersion: number): string[] {
