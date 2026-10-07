@@ -5534,46 +5534,52 @@ function claudeLedgerCallMatchesTranscript(ledgerCall: ParsedApiCall, transcript
   return Math.abs(ledgerTimestamp - transcriptTimestamp) <= CLAUDE_LEDGER_MATCH_WINDOW_MS
 }
 
-/// Claude Desktop 3p writes a durable usage-ledger record alongside a Claude
+function claudeLedgerUsageKey(call: ParsedApiCall): string {
+  const u = call.usage
+  return `${claudeLedgerModelIdentity(call.model).base}|${u.inputTokens}|${u.outputTokens}|${u.cacheCreationInputTokens}|${u.cacheReadInputTokens}|${u.webSearchRequests}`
+}
+
+/// Claude Desktop 3p writes a usage-ledger record alongside a Claude
 /// transcript. The two records have different keys, so the normal parser
-/// deduplication cannot see that they are the same request. Keep the ledger
-/// record as the durable billing source and remove only a transcript call with
-/// a one-to-one token/model/timestamp match.
-function deduplicateClaudeDesktopTranscripts(
-  transcriptProjects: ProjectSummary[],
+/// deduplication cannot see that they are the same request. Keep the
+/// transcript call, which carries the project, tools and turn classification,
+/// and drop a ledger call only on a one-to-one token/model/timestamp match.
+/// A ledger call whose transcript was deleted stays counted.
+function deduplicateClaudeDesktopLedger(
   ledgerProjects: ProjectSummary[],
+  transcriptProjects: ProjectSummary[],
 ): ProjectSummary[] {
-  const ledgerCalls = ledgerProjects.flatMap(project =>
-    project.sessions.flatMap(session =>
-      session.turns.flatMap(turn => turn.assistantCalls)
-    )
-  )
-  if (ledgerCalls.length === 0) return transcriptProjects
+  if (ledgerProjects.length === 0) return ledgerProjects
+  const transcriptCalls = new Map<string, ParsedApiCall[]>()
+  for (const project of transcriptProjects) {
+    for (const session of project.sessions) {
+      for (const turn of session.turns) {
+        for (const call of turn.assistantCalls) {
+          const key = claudeLedgerUsageKey(call)
+          const bucket = transcriptCalls.get(key)
+          if (bucket) bucket.push(call)
+          else transcriptCalls.set(key, [call])
+        }
+      }
+    }
+  }
+  if (transcriptCalls.size === 0) return ledgerProjects
 
-  const matchedLedgerIndexes = new Set<number>()
-  return filterProjectsByCall(transcriptProjects, transcriptCall => {
-    let bestIndex = -1
+  const matched = new Set<ParsedApiCall>()
+  return filterProjectsByCall(ledgerProjects, ledgerCall => {
+    let best: ParsedApiCall | undefined
     let bestDistance = Number.POSITIVE_INFINITY
-    let tied = false
-
-    for (let i = 0; i < ledgerCalls.length; i++) {
-      if (matchedLedgerIndexes.has(i)) continue
-      const ledgerCall = ledgerCalls[i]!
+    for (const transcriptCall of transcriptCalls.get(claudeLedgerUsageKey(ledgerCall)) ?? []) {
+      if (matched.has(transcriptCall)) continue
       if (!claudeLedgerCallMatchesTranscript(ledgerCall, transcriptCall)) continue
       const distance = Math.abs(Date.parse(ledgerCall.timestamp) - Date.parse(transcriptCall.timestamp))
       if (distance < bestDistance) {
-        bestIndex = i
+        best = transcriptCall
         bestDistance = distance
-        tied = false
-      } else if (distance === bestDistance) {
-        tied = true
       }
     }
-
-    // An ambiguous match is safer left in the transcript source than silently
-    // removing an unrelated request.
-    if (bestIndex < 0 || tied) return true
-    matchedLedgerIndexes.add(bestIndex)
+    if (!best) return true
+    matched.add(best)
     return false
   })
 }
@@ -6356,8 +6362,7 @@ async function runParseInner(
           saveProgress,
           readOnly,
         )
-        claudeProjects = deduplicateClaudeDesktopTranscripts(claudeProjects, ledgerProjects)
-        claudeProjects.push(...ledgerProjects)
+        claudeProjects.push(...deduplicateClaudeDesktopLedger(ledgerProjects, claudeProjects))
       }
       if (claudeSources.length > 0) emitScanProgress({ kind: 'provider', provider: 'claude', state: 'done', files: claudeSources.length })
     } catch (err) {

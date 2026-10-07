@@ -44,10 +44,11 @@ Claude Desktop 3p also writes `usage-ledger/*.ndjson` records under its
 `Claude Code`, respectively.
 
 A ledger record and a JSONL transcript can describe the same API call. The
-ledger is treated as the durable billing record, and a transcript call is
-removed only when its model, token counts, and timestamp match a ledger call
-within 30 seconds. This keeps the request counted once while retaining it
-when the transcript is later deleted.
+transcript call is kept, since it carries the project, tools, and turn
+classification, and a ledger call is dropped only when its model, token
+counts, and timestamp match a transcript call within 30 seconds. This keeps
+the request counted once while retaining it when the transcript is later
+deleted.
 
 ## Parser
 

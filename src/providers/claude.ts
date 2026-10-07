@@ -8,7 +8,6 @@ import type { Provider, ProbeRoot, SessionSource, SessionParser } from './types.
 import { calculateCost, getShortModelName } from '../models.js'
 import { readConfig } from '../config.js'
 import { FS_SCAN_CONCURRENCY, mapWithConcurrency, readSessionLines } from '../fs-utils.js'
-import type { DateRange } from '../types.js'
 import { wslHomes } from '../wsl.js'
 
 export type ClaudeConfigSource = {
@@ -299,7 +298,6 @@ function ledgerTimestamp(value: unknown): string | undefined {
 function createCoworkLedgerParser(
   source: SessionSource,
   seenKeys: Set<string>,
-  dateRange?: DateRange,
 ): SessionParser {
   return {
     async *parse() {
@@ -324,9 +322,6 @@ function createCoworkLedgerParser(
         const sessionId = typeof record['sessionId'] === 'string' ? record['sessionId'] : ''
         const timestamp = ledgerTimestamp(record['ts'])
         if (!sessionId || !timestamp) continue
-
-        const timestampDate = new Date(timestamp)
-        if (dateRange && (timestampDate < dateRange.start || timestampDate > dateRange.end)) continue
 
         const models = ledgerObject(record['models'])
         if (!models) continue
@@ -617,7 +612,7 @@ export const claude: Provider = {
     return sources
   },
 
-  createSessionParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
-    return createCoworkLedgerParser(source, seenKeys, dateRange)
+  createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+    return createCoworkLedgerParser(source, seenKeys)
   },
 }

@@ -236,11 +236,7 @@ describe('Claude Cowork usage ledger', () => {
     const expectedCost = calculateCost('us.anthropic.claude-sonnet-5', 10, 20, 40, 30, 0, 'standard', 0, 'claude')
     const first = await parseAllSessions(range('2099-05-10'), 'claude')
     expect(first.reduce((total, project) => total + project.totalApiCalls, 0)).toBe(1)
-    expect(first).toContainEqual(expect.objectContaining({
-      project: 'Claude Code',
-      totalApiCalls: 1,
-      totalCostUSD: expectedCost,
-    }))
+    expect(first.flatMap(project => project.sessions.map(session => session.sessionId))).toEqual(['code-session'])
 
     await rm(transcriptPath)
     clearSessionCache()
@@ -282,10 +278,20 @@ describe('Claude Cowork usage ledger', () => {
 
     const projects = await parseAllSessions(range('2099-05-10'), 'claude')
     expect(projects.reduce((total, project) => total + project.totalApiCalls, 0)).toBe(1)
-    expect(projects).toContainEqual(expect.objectContaining({
-      project: 'Claude Cowork',
-      totalApiCalls: 1,
-    }))
+    expect(projects.flatMap(project => project.sessions.map(session => session.sessionId))).toEqual(['cowork-session'])
+  })
+
+  it('caches the whole ledger file even when the first parse is range-limited', async () => {
+    await makeLedger([
+      ledgerLine('2099-05-10T12:00:00.000Z', 'session-1', 'cowork', 0.25),
+      ledgerLine('2099-05-11T12:00:00.000Z', 'session-2', 'cowork', 0.25),
+    ])
+
+    await parseAllSessions(range('2099-05-10'), 'claude')
+    clearSessionCache()
+    const nextDay = await parseAllSessions(range('2099-05-11'), 'claude')
+
+    expect(nextDay.flatMap(project => project.sessions.map(session => session.sessionId))).toEqual(['session-2'])
   })
 
   it('does not deduplicate calls more than 30 seconds apart', async () => {
