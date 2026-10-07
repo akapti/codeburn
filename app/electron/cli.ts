@@ -339,6 +339,9 @@ export function spawnEnvFor(bin: string): NodeJS.ProcessEnv {
  */
 /** A script run by this process's own runtime: Electron's binary acting as Node. */
 function nodeSpec(entry: string, args: string[]): SpawnSpec {
+  // A host whose own runtime is too old for the CLI (an IDE's Electron) names a real Node.
+  const node = process.env.CODEBURN_NODE_BIN
+  if (node && isAbsolute(node)) return { bin: node, args: [entry, ...args], env: spawnEnvFor(entry) }
   return {
     bin: process.execPath,
     args: [entry, ...args],
@@ -1030,6 +1033,15 @@ export function startServe(pidFile?: string): void {
   serveClient.start()
 }
 
+/** Replace the resident child with one spawned for the current target, e.g.
+ *  after the Node.js it runs on changed. */
+export function restartServe(pidFile?: string): void {
+  const child = serveClient?.destroy()
+  serveClient = null
+  if (child) retireWithFlush(child)
+  startServe(pidFile)
+}
+
 /**
  * Best-effort reap of a serve child orphaned by a previous run (an app crash
  * leaves no one to close its stdin). Reads the pid recorded by
@@ -1141,7 +1153,8 @@ export function spawnCli(
   // first real query before its ready frame, making that request the single
   // cache warm-up. CODEBURN_PROGRESS is compatible because startServe sets it
   // on the resident child; any other per-call env needs an isolated one-shot.
-  if (SERVE_ROUTED.has(args[0] ?? '') && isServeCompatibleEnv(opts.extraEnv)) {
+  // `--why` returns transcript content, which must not land in serve's output memo.
+  if (SERVE_ROUTED.has(args[0] ?? '') && !args.includes('--why') && isServeCompatibleEnv(opts.extraEnv)) {
     const serve = serveClient
     // Recover lazily from an unexpected child death. start() is synchronous and
     // idempotent, and the client's consecutive-death budget prevents an endlessly

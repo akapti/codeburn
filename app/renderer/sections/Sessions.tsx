@@ -11,7 +11,7 @@ import { SessionDrawer } from '../components/SessionDrawer'
 import { StaleBanner } from '../components/StaleBanner'
 import { Icon } from '../components/icons'
 import { usePolled } from '../hooks/usePolled'
-import { formatCompact, formatCount, formatDayShort, formatUsd, shortenProjectPath } from '../lib/format'
+import { formatCompact, formatCount, formatDayShort, formatUsd, isEstimatedCost, shortenProjectPath } from '../lib/format'
 import { Usd, tokensOf } from '../components/Usd'
 import { codeburn } from '../lib/ipc'
 import {
@@ -23,6 +23,7 @@ import {
   type InvestigationFilters,
 } from '../lib/investigation'
 import { reportMemoKey } from '../lib/reportMemoKey'
+import { hasSessionView, SessionView } from './SessionView'
 import type { DateRange, Period, SessionDrillRow, SessionRow } from '../lib/types'
 import { t } from '../i18n'
 
@@ -363,6 +364,10 @@ export function Sessions({
   const remaining = included.length - renderedRows
   const openRow = effectiveOpenSessionId ? rows.find(row => sessionRowKey(row) === effectiveOpenSessionId) ?? null : null
 
+  if (openRow && hasSessionView(openRow)) {
+    return <SessionView key={sessionRowKey(openRow)} row={openRow} filters={filters} medianCost={medianCost} onBack={closeDrawer} />
+  }
+
   return (
     <div className="sessions-list-view">
       {report.error && <StaleBanner error={report.error} />}
@@ -465,11 +470,11 @@ export function Sessions({
                       <span className="session-cost-split">
                         <strong>{formatUsd(entry.entry.cost)}</strong>
                         {entry.entry.cost < entry.entry.row.cost - 1e-9 && (
-                          <small title={t('sessions.list.fullCostTooltip')}> {t('sessions.list.ofConnector')} <Usd value={entry.entry.row.cost} tokens={tokensOf(entry.entry.row)} nested /></small>
+                          <small title={t('sessions.list.fullCostTooltip')}> {t('sessions.list.ofConnector')} <Usd value={entry.entry.row.cost} tokens={tokensOf(entry.entry.row)} nested estimated={isEstimatedCost(entry.entry.row.cost, entry.entry.row.estimatedCost)} /></small>
                         )}
                       </span>
                     ) : (
-                      <span><Usd value={entry.entry.row.cost} tokens={tokensOf(entry.entry.row)} nested /></span>
+                      <span><Usd value={entry.entry.row.cost} tokens={tokensOf(entry.entry.row)} nested estimated={isEstimatedCost(entry.entry.row.cost, entry.entry.row.estimatedCost)} /></span>
                     )}
                     <span>{formatCompact(rowTokens(entry.entry.row))}</span>
                   </button>
@@ -487,7 +492,7 @@ export function Sessions({
           )}
         </>
       )}
-      {openRow && (
+      {openRow && !hasSessionView(openRow) && (
         <SessionDrawer
           row={openRow}
           openKey={sessionRowKey(openRow)}

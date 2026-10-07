@@ -52,9 +52,9 @@ export type LongContextTier = {
 /// total), and Anthropic folds thinking into output the same way, so summing
 /// the two double-counts both the cost and the displayed output tokens. Copilot
 /// is the same case: its per-request token_details_json prices input/cache/output
-/// and nothing else, and its supplementary store-row/shutdown calls carry
-/// reasoningTokens with outputTokens 0 while the per-turn assistant.message call
-/// bills the full output, so adding reasoning on top bills it twice.
+/// and nothing else, and its store-row/shutdown calls carry reasoningTokens
+/// beside an output count that already includes them, so adding reasoning on
+/// top bills it twice.
 /// DSH TokenUsage includes reasoning in output too; see the pinned contract:
 /// https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/docs/subsystems/llm-streaming.md#tokenusage
 const REASONING_INCLUDED_IN_OUTPUT = new Set(['claude', 'codex', 'copilot', 'dsh'])
@@ -105,7 +105,9 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 // source publishes no `provider_specific_entry.fast` (#1616), so a cached costs
 // object can carry a multiplier the pre-fix fetch left at 1.
 // 7: ModelCosts carries the Flex tier's rates (`flex`), read from `<rate>_flex`.
-export const CACHE_SCHEMA_VERSION = 7
+// 8: a bare id takes the maker's row over a reseller's, and a reseller's priced
+// row over a reseller's $0 one, so a cached map can still hold azure_ai's rate under `grok-4.6`.
+export const CACHE_SCHEMA_VERSION = 8
 const WEB_SEARCH_COST = 0.01
 const ONE_HOUR_CACHE_WRITE_MULTIPLIER_FROM_FIVE_MINUTE_RATE = 1.6
 
@@ -115,7 +117,11 @@ const ONE_HOUR_CACHE_WRITE_MULTIPLIER_FROM_FIVE_MINUTE_RATE = 1.6
 // output, $0.20 cache read; composer-1.5: $3.50/$17.50/$0.35; composer-1:
 // $1.25/$10/$0.125. Cursor publishes no separate cache-write rate for these,
 // so cache write uses the input rate.
+// deepseek-v3.2: DeepSeek's last published price was $0.28 miss / $0.028 hit /
+// $0.42 output; LiteLLM's deepseek/deepseek-v3.2 row says $0.40 output while its
+// own deepseek-chat row says $0.42. Drop once upstream corrects it.
 const BUILTIN_PRICE_OVERRIDES: Record<string, SnapshotEntry> = {
+  'deepseek-v3.2': [0.28e-6, 0.42e-6, null, 0.028e-6],
   'composer-2.5': [0.5e-6, 2.5e-6, 0.5e-6, 0.2e-6],
   'composer-2': [0.5e-6, 2.5e-6, 0.5e-6, 0.2e-6],
   'composer-1.5': [3.5e-6, 17.5e-6, 3.5e-6, 0.35e-6],
@@ -173,7 +179,9 @@ const GROK_4_6_HIGH_PROMPT_COSTS = buildCosts(4e-6, 12e-6, null, 1e-6, null)
 // codex sites and the parser.ts central recompute pass it; the Claude journal
 // paths and the copilot residual path do not, so a newly added provider whose
 // calls flow through those sites would silently stay tierless).
-export const TIERED_PRICING_PROVIDERS: ReadonlySet<string> = new Set(['codex'])
+// antigravity has no per-token bill of its own; its cost is the Gemini API
+// equivalent, and the Gemini API bills the above-200k tier per request.
+export const TIERED_PRICING_PROVIDERS: ReadonlySet<string> = new Set(['codex', 'antigravity'])
 
 // Swap in the vendor's high tier when a request's prompt crosses the published
 // threshold. A user-set priceOverride wins over any tier: the override row
@@ -433,6 +441,14 @@ export function parseLiteLLMEntry(entry: LiteLLMEntry): ModelCosts | null {
 // this module has no other way to signal that across a fresh CLI process.
 let livePricingTimestamp: number | null = null
 
+const MAKER_PREFIXES: ReadonlySet<string> = new Set([
+  'xai', 'mistral', 'cohere', 'anthropic', 'openai', 'gemini', 'deepseek', 'moonshot',
+  'zai', 'minimax', 'ai21', 'perplexity', 'dashscope', 'meta_llama', 'xiaomi_mimo',
+])
+// Two segments only: `perplexity/openai/gpt-5.6-sol` is Perplexity reselling.
+const isMakerRow = (name: string) => name.split('/').length === 2 && MAKER_PREFIXES.has(name.split('/')[0]!)
+const isFreeRow = (c: ModelCosts) => c.inputCostPerToken === 0 && c.outputCostPerToken === 0
+
 async function fetchAndCachePricing(): Promise<Map<string, ModelCosts>> {
   // Bounded: runs on every CLI invocation (the menubar shells out and blocks on
   // it). Without a timeout a half-open network after wake-from-sleep makes
@@ -443,15 +459,29 @@ async function fetchAndCachePricing(): Promise<Map<string, ModelCosts>> {
   const data = await response.json() as Record<string, LiteLLMEntry>
   const pricing = new Map<string, ModelCosts>()
 
+  const parsed: [string, ModelCosts][] = []
   for (const [name, entry] of Object.entries(data)) {
     const costs = parseLiteLLMEntry(entry)
-    if (!costs) continue
-    pricing.set(name, costs)
-    // Also index by stripped name so lookups work without provider prefix:
-    // 'anthropic/claude-opus-4-6' is also queryable as 'claude-opus-4-6'.
-    // First write wins so direct-provider entries take precedence over re-hosters.
+    if (costs) parsed.push([name, costs])
+  }
+  // Also index by stripped name so lookups work without provider prefix:
+  // 'anthropic/claude-opus-4-6' is also queryable as 'claude-opus-4-6'. A
+  // direct entry of that name always wins; otherwise the maker's own row beats
+  // a reseller's whatever the JSON order, even at $0, and among resellers a
+  // $0/$0 row yields to any priced one. Mirrors scripts/bundle-litellm.mjs.
+  const bareClaims = new Map<string, ModelCosts>()
+  const makerClaimed = new Set<string>()
+  for (const [name, costs] of [...parsed.filter(([n]) => isMakerRow(n)), ...parsed.filter(([n]) => !isMakerRow(n))]) {
     const stripped = name.replace(/^[^/]+\//, '')
-    if (stripped !== name && !pricing.has(stripped)) pricing.set(stripped, costs)
+    if (stripped === name) continue
+    const prev = bareClaims.get(stripped)
+    if (!prev || (!makerClaimed.has(stripped) && isFreeRow(prev) && !isFreeRow(costs))) bareClaims.set(stripped, costs)
+    if (isMakerRow(name)) makerClaimed.add(stripped)
+  }
+  for (const [name, costs] of parsed) {
+    pricing.set(name, costs)
+    const stripped = name.replace(/^[^/]+\//, '')
+    if (stripped !== name && !pricing.has(stripped)) pricing.set(stripped, bareClaims.get(stripped)!)
   }
 
   const timestamp = Date.now()

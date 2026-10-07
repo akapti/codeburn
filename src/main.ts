@@ -12,7 +12,7 @@ import { allProviderNames, getAllProviders, safeDiscoverSessions } from './provi
 import { getProvider } from './providers/index.js'
 import { getClaudeConfigDirs, getDesktopSessionsDirs } from './providers/claude.js'
 import { convertCost, formatCost } from './currency.js'
-import { excludedGatewayNote, formatTokens, renderStatusBar } from './format.js'
+import { ESTIMATED_COST_LEGEND, excludedGatewayNote, formatTokens, isEstimatedCost, renderStatusBar } from './format.js'
 import { toDateString } from './daily-cache.js'
 import { statusSnapshotSemanticKey } from './status-snapshot-semantic.js'
 import { dateKey } from './day-aggregator.js'
@@ -2898,6 +2898,7 @@ program
       process.stdout.write(renderMarkdown(renderRows, { byTask: !!opts.byTask, byAgent: !!opts.byAgent, showTotals: opts.totals !== false }) + '\n')
     } else if (fmt === 'table') {
       process.stdout.write(renderTable(renderRows, { byTask: !!opts.byTask, byAgent: !!opts.byAgent, showTotals: opts.totals !== false }) + '\n')
+      if (renderRows.some(r => isEstimatedCost(r.costUSD, r.estimatedCostUSD))) process.stdout.write(ESTIMATED_COST_LEGEND + '\n')
       if (renderRows.some(r => r.peakUSD != null || r.offPeakUSD != null)) {
         process.stdout.write('Peak / Off-peak: consumption shares of the list-rate cost — DeepSeek peak hours are Mon–Fri 01:00–04:00 and 06:00–10:00 UTC (excl. Chinese public holidays), GLM/Z.ai peak hours are Mon–Fri 14:00–18:00 Singapore time. The vendors discount off-peak usage on their own bills (DeepSeek USD at 0.5x, Z.ai plan credits at 0.5x); the split only shows where usage ran. First-party routes only (dsh, zcode).\n')
       }
@@ -2924,6 +2925,8 @@ program
   .option('--by-pr', 'Group spend by the pull requests each session referenced')
   .option('--by-work-unit', 'Group sessions into provider-recorded work units: one row per orchestration root with its delegated children folded beneath')
   .option('--contributions', 'JSON only: attach per-session contribution segments (day, category, branch, model, PR) to each row')
+  .option('--id <id>', 'With --why: the Claude Code session to explain')
+  .option('--why', 'Explain why one session cost what it did: findings, spend by prompt, steps (needs --id; Claude Code only)')
   .option('--no-pager', 'Print the complete table directly instead of opening the interactive browser')
   .option('--project <name>', 'Show only projects matching name (repeatable)', collect, [])
   .option('--exclude <name>', 'Exclude projects matching name (repeatable)', collect, [])
@@ -2932,6 +2935,16 @@ program
     assertFormat(opts.format, ['table', 'json'], 'sessions')
     assertRoute(opts.route, 'sessions')
     assertBilling(opts.billing, 'sessions')
+    if (opts.why || opts.id) {
+      if (!opts.why || !opts.id) {
+        process.stderr.write('codeburn sessions: --why and --id go together (codeburn sessions --id <id> --why).\n')
+        process.exit(1)
+      }
+      const { runSessionWhy } = await import('./session-why.js')
+      await loadPricing()
+      process.exitCode = await runSessionWhy(opts.id, opts.format)
+      return
+    }
     if (opts.byWorkUnit && (opts.route || opts.billing)) {
       process.stderr.write('codeburn sessions: --by-work-unit cannot be combined with --route or --billing.\n')
       process.exit(1)

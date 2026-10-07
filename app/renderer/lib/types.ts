@@ -237,6 +237,8 @@ export type MenubarPayload = {
       outputTokens?: number
       cacheReadTokens?: number
       cacheWriteTokens?: number
+      // Portion of `cost` priced from estimates; optional on older CLIs.
+      estimatedCostUSD?: number
     }>
     unpricedModels?: Array<{ model: string; calls: number; tokens: number }>
     localModelSavings: LocalModelSavings
@@ -244,7 +246,7 @@ export type MenubarPayload = {
     // Optional: older CLIs omit it. `id` is the internal provider name (round-trips
     // as --provider), `label` the display name. `hasUsage` distinguishes active $0
     // providers from detected-but-idle providers when present.
-    providerDetails?: Array<{ id: string; label: string; cost: number; calls?: number; hasUsage?: boolean; excludedFromTotal?: boolean; sessions?: number; sessionCountBasis?: 'identity' | 'partial' }>
+    providerDetails?: Array<{ id: string; label: string; cost: number; calls?: number; hasUsage?: boolean; excludedFromTotal?: boolean; sessions?: number; sessionCountBasis?: 'identity' | 'partial'; estimatedCostUSD?: number }>
     topProjects: Array<{
       id?: string
       name: string
@@ -411,6 +413,10 @@ export type ModelReportRow = {
   cacheReadTokens: number
   totalTokens: number
   costUSD: number
+  // Portion of costUSD priced from estimates, and the CLI's marker decision
+  // (src/format.ts isEstimatedCost). Optional: older CLIs omit both.
+  estimatedCostUSD?: number
+  isEstimated?: boolean
   savingsUSD: number
   savingsBaselineModel: string
   calls: number
@@ -672,6 +678,10 @@ export type SessionRow = {
   provider: string
   models: string[]
   cost: number
+  // Portion of `cost` priced from estimates, and the CLI's marker decision.
+  // Optional: older CLIs omit both.
+  estimatedCost?: number
+  isEstimated?: boolean
   savingsUSD: number
   calls: number
   turns: number
@@ -726,6 +736,69 @@ export type SessionDrillFields = {
 }
 
 export type SessionDrillRow = SessionRow & SessionDrillFields
+
+// ————— src/session-why.ts (`sessions --id <id> --why --format json`) —————
+// Read on demand for one session; transcript text is never cached or synced.
+
+export type WhyParts = { input: number; output: number; cacheRead: number; cacheWrite: number; webSearch: number }
+export type WhyTokens = { input: number; output: number; cacheRead: number; cacheWrite: number }
+export type WhyAlt = { model: string; cost: number }
+export type WhyError = { exitCode: number | null; cause: string | null; location: string | null; secondary: string[] }
+export type WhyHelper = { id: string; description: string; agentType: string; models: string[]; calls: number; cost: number; nested: boolean; loose: boolean }
+export type WhyDetail = { command?: string; description?: string; output?: string; path?: string; diff?: string; lines?: number; input?: string; helper?: WhyHelper }
+export type WhyStep =
+  | { kind: 'model'; start: number; end: number; model: string; cost: number; parts: WhyParts; tokens: WhyTokens; startedBy: 'prompt' | 'tool' | 'message' }
+  | { kind: 'tool'; start: number; end: number; name: string; label: string; isError: boolean; error?: WhyError; helperCost?: number; detail: WhyDetail | null }
+export type WhyTurn = {
+  i: number
+  ts: string
+  prompt: { text: string; kind: 'text' | 'pasted' | 'system' }
+  cost: number
+  parts: WhyParts
+  tokens: WhyTokens
+  calls: number
+  models: string[]
+  helperCost: number
+  helpers: WhyHelper[]
+  wallMs: number
+  steps: WhyStep[]
+}
+type WhyBase = { id: string; turn?: number; step?: number; usd: number | null; share: number | null }
+export type WhyFinding = WhyBase & (
+  | { kind: 'helpers'; direct: number; nested: number; loose: number; models: string[]; descriptions: string[]; parts: WhyParts; tokens: WhyTokens; calls: number; minCalls: number; maxCalls: number; alt: WhyAlt | null }
+  | { kind: 'hotspot'; calls: number; toolCalls: number; models: string[]; median: number; parts: WhyParts; tokens: WhyTokens; alt: WhyAlt | null }
+  | { kind: 'coordination'; calls: number; toolCalls: number; model: string; parts: WhyParts; alt: WhyAlt | null }
+  | { kind: 'reread'; calls: number; avgTokens: number }
+  | { kind: 'failed'; tool: string; label: string; description: string; error: WhyError; userStopped: boolean; afterCalls: number | null }
+  | { kind: 'carry'; estimate: true; source: 'tool' | 'paste'; tool: string; label: string; chars: number; tokens: number; calls: number; writeUsd: number; readUsd: number }
+  | { kind: 'prefix'; estimate: true; tokens: number; cached: number; uncached: number; writeUsd: number; readUsd: number; laterCalls: number; readCalls: number }
+  | { kind: 'idle'; timeMs: number; endedBy: 'prompt' | 'tool' | 'message' | 'helper' }
+  | { kind: 'slowCall'; timeMs: number; model: string; outputTokens: number }
+)
+export type WhyRules = {
+  hotspotTopShare: number; hotspotMedianX: number; hotspotMinShare: number; helperShare: number
+  coordinationMinCalls: number; coordinationToolShare: number; rereadShare: number; rereadMinCalls: number
+  carryTokens: number; prefixTokens: number; idleMs: number; slowCallMs: number
+}
+export type SessionWhy = {
+  sessionId: string
+  title: string
+  project: string
+  startedAt: string
+  endedAt: string
+  cost: number
+  calls: number
+  parts: WhyParts
+  tokens: WhyTokens
+  models: Array<{ model: string; cost: number }>
+  helperCost: number
+  helperCount: number
+  median: number
+  turns: WhyTurn[]
+  findings: WhyFinding[]
+  rules: WhyRules
+  detailsOmitted: boolean
+}
 
 // ————— src/compare-stats.ts —————
 export type ModelStats = {
@@ -1157,7 +1230,22 @@ export type ProjectRow = { name: string; path: string; cost: number; sessions: n
 
 export type ProjectsReport = { projects: ProjectRow[] }
 
+export type IdeCommand = { section?: string; period?: string; refresh?: boolean }
+
 export interface CodeburnBridge {
+  /** Set by the VS Code extension's webview bridge; absent in the desktop app. */
+  readonly host?: 'vscode'
+  /** The extension's own version, set beside `host`. */
+  readonly hostVersion?: string
+  /** The IDE's project scope: the open workspace's projects, or every project.
+   *  `label` names the workspace; null when no folder is open. */
+  readonly ideScope?: { workspace: boolean; label: string | null }
+  /** Switch the IDE scope. The host reloads the view under the new scope. */
+  setIdeScope?(workspace: boolean): Promise<void>
+  /** Open the editor's own settings for CodeBurn. */
+  openIdeSettings?(): Promise<void>
+  /** Editor commands aimed at an open dashboard: go to a section/period, or refresh. */
+  onIdeCommand?(cb: (command: IdeCommand) => void): () => void
   /** The Electron app's own UI language tag (app.getLocale()), for the 'system'
    *  locale choice. Absent on preloads that predate desktop localization. */
   readonly appLocale?: string
@@ -1192,6 +1280,8 @@ export interface CodeburnBridge {
   /** Session rows with per-turn contribution segments (`sessions --contributions`).
    *  Same population and filtering semantics as getSessions; additive fields only. */
   getSessionsContributions(period: Period, provider: string, range?: DateRange, background?: boolean): Promise<SessionDrillRow[]>
+  /** One Claude Code session's cost diagnosis, read on demand (`sessions --id <id> --why`). */
+  getSessionWhy(id: string): Promise<SessionWhy>
   getCompareModels(period: Period, provider: string, background?: boolean): Promise<ModelStats[]>
   getCompare(period: Period, provider: string, modelA: string, modelB: string): Promise<CompareJsonReport>
   /** Cohort mode facets: models, canonical projects, activity categories. */

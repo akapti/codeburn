@@ -10,7 +10,7 @@ import { resolveSubagentAttribution, sessionIdentity } from './sessions-report.j
 import { normalizeContentBlocks, flatSlice, flatString } from './content-utils.js'
 import { discoverAllSessions, discoverAllSessionsWithFailures, getProvider } from './providers/index.js'
 import { evictCachedCodexResults, flushCodexCache, readCachedCodexResults, withCodexCacheDirectory, writeCachedCodexResults } from './codex-cache.js'
-import { antigravityCascadeIdFromPath, flushAntigravityCache, shouldReparseAntigravitySource } from './providers/antigravity.js'
+import { antigravityCascadeIdFromPath, flushAntigravityCache, preloadAntigravityCache, shouldReparseAntigravitySource } from './providers/antigravity.js'
 import { getClaudeConfigDirs, getDesktopSessionsDirs } from './providers/claude.js'
 import { kimicodeLineageForSource } from './providers/kimicode.js'
 import { isSqliteBusyError } from './sqlite.js'
@@ -3485,6 +3485,7 @@ export async function parseProviderSources(
   // for this whole parse transaction so a host changing CODEBURN_CACHE_DIR
   // before the final flush cannot redirect A's dirty state into (or past) B.
   const antigravityCacheDir = providerName === 'antigravity' ? getCodeburnCacheDir() : undefined
+  if (antigravityCacheDir && !readOnly) await preloadAntigravityCache(antigravityCacheDir)
 
   const section = getOrCreateProviderSection(diskCache, providerName)
   if (providerName === 'hermes' && !readOnly) {
@@ -4008,12 +4009,13 @@ export async function parseProviderSources(
   //   rows' own label — so neither a store row cached before events.jsonl
   //   existed nor an events.jsonl orphaned after a prune can split the
   //   session across two grouping keys.
-  type CopilotStamped = { ts: number; input: number; cacheRead: number; cacheWrite: number; reasoning: number; isCompaction?: boolean }
+  type CopilotStamped = { ts: number; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; isCompaction?: boolean }
   let copilotRecon: {
     storeKeys: Set<string>
     storeCalls: Map<string, CopilotStamped[]>
     rollupLegs: Map<string, Array<CopilotStamped & { rawTs: string; compactedAtMs: number }>>
     supplementaryStoreKeys: Set<string>
+    turnOwnedOutputKeys: Set<string>
     sessionProject: Map<string, string>
     storeProject: Map<string, string>
     nanRollupFallbackTs: Map<string, string>
@@ -4030,8 +4032,8 @@ export async function parseProviderSources(
     const storeKeys = new Set<string>()
     const storeCalls = new Map<string, CopilotStamped[]>()
     const rollupLegs = new Map<string, Array<CopilotStamped & { rawTs: string; compactedAtMs: number }>>()
-    const storeRowIds = new Map<string, Array<{ ts: number; dedupKey: string }>>()
-    const perTurnTs = new Map<string, number[]>()
+    const storeRowIds = new Map<string, Array<{ ts: number; dedupKey: string; stamped: CopilotStamped }>>()
+    const perTurnTs = new Map<string, Array<{ ts: number; hasOutput: boolean }>>()
     const sessionProject = new Map<string, string>()
     const storeProject = new Map<string, string>()
     // Stable timestamp fallbacks for rollup calls whose own stamp cannot
@@ -4072,7 +4074,7 @@ export async function parseProviderSources(
             if (project && !sessionProject.has(turn.sessionId)) sessionProject.set(turn.sessionId, project)
             if (!Number.isNaN(ts)) {
               const list = perTurnTs.get(aggKey) ?? []
-              list.push(ts)
+              list.push({ ts, hasOutput: c.usage.outputTokens > 0 })
               perTurnTs.set(aggKey, list)
             }
             continue
@@ -4081,6 +4083,10 @@ export async function parseProviderSources(
           const stamped: CopilotStamped = {
             ts,
             input: c.usage.inputTokens,
+            // Rollups carry output only for legs with no per-turn output. A
+            // store row's output is zeroed below when its per-turn partner
+            // carries output, so this never meets the per-turn calls' output.
+            output: c.usage.outputTokens,
             cacheRead: c.usage.cacheReadInputTokens,
             cacheWrite: c.usage.cacheCreationInputTokens,
             reasoning: c.usage.reasoningTokens,
@@ -4096,11 +4102,12 @@ export async function parseProviderSources(
             // where it does not, this row is indistinguishable from a user
             // request and keeps the pre-label behaviour.
             const isCompaction = c.initiator === 'compaction'
-            list.push(isCompaction ? { ...stamped, isCompaction: true } : stamped)
+            if (isCompaction) stamped.isCompaction = true
+            list.push(stamped)
             storeCalls.set(aggKey, list)
             if (!isCompaction) {
               const ids = storeRowIds.get(aggKey) ?? []
-              ids.push({ ts, dedupKey: c.deduplicationKey })
+              ids.push({ ts, dedupKey: c.deduplicationKey, stamped })
               storeRowIds.set(aggKey, ids)
             }
             if (c.project && !storeProject.has(turn.sessionId)) storeProject.set(turn.sessionId, c.project)
@@ -4123,20 +4130,30 @@ export async function parseProviderSources(
     // against a neighbor whose own row is missing and hide the crash
     // request's call weight. The residual ambiguity (a crash row landing
     // within the window of an unrecorded-row request) is a double-failure
-    // conjunction and affects only call counts, never tokens.
+    // conjunction.
+    // Pairing also decides who owns a request's output: older CLIs write it on
+    // the per-turn call AND the row, so a row paired with a per-turn call that
+    // carries output serves with output 0. CLI 1.0.8x and ACP hosts write no
+    // per-turn output, so their rows keep it — the only record of it when the
+    // session never shut down.
     const PAIR_WINDOW_MS = 2 * 60 * 1000
     const supplementaryStoreKeys = new Set<string>()
+    const turnOwnedOutputKeys = new Set<string>()
     for (const [aggKey, ids] of storeRowIds) {
       const callTs = perTurnTs.get(aggKey)
       if (!callTs?.length) continue
       ids.sort((a, b) => a.ts - b.ts)
-      callTs.sort((a, b) => a - b)
+      callTs.sort((a, b) => a.ts - b.ts)
       let i = 0
       let j = 0
       while (i < ids.length && j < callTs.length) {
-        const d = ids[i]!.ts - callTs[j]!
+        const d = ids[i]!.ts - callTs[j]!.ts
         if (Math.abs(d) <= PAIR_WINDOW_MS) {
           supplementaryStoreKeys.add(ids[i]!.dedupKey)
+          if (callTs[j]!.hasOutput && ids[i]!.stamped.output > 0) {
+            ids[i]!.stamped.output = 0
+            turnOwnedOutputKeys.add(ids[i]!.dedupKey)
+          }
           i++
           j++
         } else if (d < 0) {
@@ -4146,7 +4163,7 @@ export async function parseProviderSources(
         }
       }
     }
-    copilotRecon = { storeKeys, storeCalls, rollupLegs, supplementaryStoreKeys, sessionProject, storeProject, nanRollupFallbackTs, sessionEarliestValidTs }
+    copilotRecon = { storeKeys, storeCalls, rollupLegs, supplementaryStoreKeys, turnOwnedOutputKeys, sessionProject, storeProject, nanRollupFallbackTs, sessionEarliestValidTs }
   }
   const copilotServeProject = (sessionId: string): string | undefined =>
     copilotRecon
@@ -4192,8 +4209,13 @@ export async function parseProviderSources(
       }
       if (c.deduplicationKey.startsWith('copilot-store:')) {
         const project = copilotRecon.sessionProject.get(turn.sessionId)
-        if (project && c.project !== project) {
-          kept.push({ ...c, project })
+        let served = c
+        if (project && c.project !== project) served = { ...served, project }
+        if (copilotRecon.turnOwnedOutputKeys.has(c.deduplicationKey)) {
+          served = { ...served, usage: { ...served.usage, outputTokens: 0 } }
+        }
+        if (served !== c) {
+          kept.push(served)
           changed = true
           continue
         }
@@ -4411,6 +4433,7 @@ export async function parseProviderSources(
         const last = coalesced[coalesced.length - 1]
         if (last && last.ts === leg.ts) {
           last.input += leg.input
+          last.output += leg.output
           last.cacheRead += leg.cacheRead
           last.cacheWrite += leg.cacheWrite
           last.reasoning += leg.reasoning
@@ -4424,7 +4447,7 @@ export async function parseProviderSources(
       let prevLegTs = -Infinity
       for (let legIdx = 0; legIdx < coalesced.length; legIdx++) {
         const leg = coalesced[legIdx]!
-        const covered = { input: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }
+        const covered = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }
         // An in-session compaction RESETS the CLI's rollup counters, so a leg
         // containing one describes only its post-compaction requests. Starting
         // its interval at the previous leg would subtract the whole
@@ -4446,6 +4469,7 @@ export async function parseProviderSources(
           // over-serve per compaction stands.
           if (row.ts > intervalStart || (row.isCompaction && row.ts > prevLegTs)) {
             covered.input += row.input
+            covered.output += row.output
             covered.cacheRead += row.cacheRead
             covered.cacheWrite += row.cacheWrite
             covered.reasoning += row.reasoning
@@ -4454,10 +4478,11 @@ export async function parseProviderSources(
         }
         prevLegTs = leg.ts
         const input = Math.max(0, leg.input - covered.input)
+        const output = Math.max(0, leg.output - covered.output)
         const cacheRead = Math.max(0, leg.cacheRead - covered.cacheRead)
         const cacheWrite = Math.max(0, leg.cacheWrite - covered.cacheWrite)
         const reasoning = Math.max(0, leg.reasoning - covered.reasoning)
-        if (input === 0 && cacheRead === 0 && cacheWrite === 0 && reasoning === 0) continue
+        if (input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0 && reasoning === 0) continue
         if (dateRange) {
           const ts = new Date(leg.rawTs)
           if (Number.isNaN(ts.getTime()) || ts < dateRange.start || ts > dateRange.end) continue
@@ -4466,8 +4491,8 @@ export async function parseProviderSources(
         calls.push({
           provider: 'copilot',
           model,
-          usage: { inputTokens: input, outputTokens: 0, cacheCreationInputTokens: cacheWrite, cacheReadInputTokens: cacheRead, cachedInputTokens: 0, reasoningTokens: reasoning, webSearchRequests: 0 },
-          costUSD: calculateCost(model, input, 0, cacheWrite, cacheRead, 0),
+          usage: { inputTokens: input, outputTokens: output, cacheCreationInputTokens: cacheWrite, cacheReadInputTokens: cacheRead, cachedInputTokens: 0, reasoningTokens: reasoning, webSearchRequests: 0 },
+          costUSD: calculateCost(model, input, output, cacheWrite, cacheRead, 0),
           tools: [], mcpTools: [], skills: [], subagentTypes: [],
           hasAgentSpawn: false, hasPlanMode: false,
           speed: 'standard', timestamp: leg.rawTs, bashCommands: [],

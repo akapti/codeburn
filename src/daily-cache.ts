@@ -273,10 +273,35 @@ import type { DateRange, ProjectSummary } from './types.js'
 // standard, and `gpt-reserve` / `gpt-5.3-spark` price as GPT-5.6 Luna / GPT-5.3
 // Codex Spark instead of $0. Only cost moves; call counts are unchanged, so no
 // PENDING_REDERIVE_PROVIDER_VERSIONS entry is needed.
-// v56: #1579 Claude Desktop usage-ledger support, ledger-backed transcript
-// de-duplication, source metadata, and CodeBurn repricing change settled Claude
-// totals, so re-derive surviving days.
-export const DAILY_CACHE_VERSION = 56
+// v56: Copilot assistant.message events with no outputTokens (CLI 1.0.8x, the
+// VS Code agent host) count as calls, and their shutdown rollup (or, under
+// session-store rows, its residual) carries the output it previously dropped.
+// Settled days re-derive. Calls only rise, except a store row and its message
+// straddling midnight, which moves one call to the next day; copilot's
+// PENDING_REDERIVE contract moves to 56 so that day may shrink once.
+// v57: Copilot session-store rows carry their own output where no per-turn call
+// does, so a session that never wrote session.shutdown (ACP hosts such as
+// JetBrains AI Chat) counts its output, and grok-4.6 prices at xAI's $2/M input
+// instead of Azure's $1.25/M. Output and cost only rise; call counts are
+// unchanged, so no PENDING_REDERIVE_PROVIDER_VERSIONS entry is needed.
+// v58: Cursor Agent transcript turns are dated by their prompt's <timestamp>
+// tag instead of the session's last write. Settled days re-derive; a session
+// that crossed midnight moves calls to an earlier day, so cursor-agent joins
+// PENDING_REDERIVE_PROVIDER_VERSIONS at 58.
+// v59: Antigravity reads cache-read tokens from gen_metadata and the RPC usage,
+// and the standalone app's placeholder-only model (MODEL_PLACEHOLDER_M16, stored
+// as "gemini-pro-default") prices as gemini-3.1-pro-high instead of $0, with
+// the above-200k tier. Cache read and cost only rise. Standalone rows without
+// created_at move from the file-mtime day to their first step's day, so a
+// session that crossed midnight moves calls to an earlier day, and antigravity
+// joins PENDING_REDERIVE_PROVIDER_VERSIONS at 59.
+// v60: Mistral Vibe 2.26 Unified Harness sessions (`unified/<id>/`) are read;
+// days finalized while they were skipped re-derive. Calls only rise, so no
+// PENDING_REDERIVE_PROVIDER_VERSIONS entry is needed.
+// v61: #1579 Claude Desktop usage-ledger records (Claude-3p Cowork and Code)
+// are read and de-duplicated against matching transcript calls. Calls only
+// rise, so no PENDING_REDERIVE_PROVIDER_VERSIONS entry is needed.
+export const DAILY_CACHE_VERSION = 61
 const MIN_SUPPORTED_VERSION = 28
 
 /// Providers whose per-day CALL COUNT means something different at
@@ -300,7 +325,9 @@ const MIN_SUPPORTED_VERSION = 28
 /// fresh slice at all, so it still carries forward whole — the #1033 bar is
 /// untouched, in both directions, and every other provider keeps the guard.
 const PENDING_REDERIVE_PROVIDER_VERSIONS: Readonly<Record<string, number>> = {
-  copilot: 26,
+  // 56: a store row now pairs with its tokenless per-turn twin, which can
+  // move one call across midnight.
+  copilot: 56,
   // Codex response records replace stale/zero token_count twins and can
   // legitimately reduce counts as well as recover missing usage.
   codex: 43,
@@ -315,6 +342,11 @@ const PENDING_REDERIVE_PROVIDER_VERSIONS: Readonly<Record<string, number>> = {
   // 46: transcript-era Devin days put every step lacking metadata.created_at
   // on the session's last-activity day; sessions.db dates each request.
   devin: 46,
+  // 58: transcript turns moved from the session's last write to prompt time.
+  'cursor-agent': 58,
+  // 59: standalone rows without created_at moved from the file mtime to the
+  // first step's time.
+  antigravity: 59,
 }
 
 function providersPendingRederiveFrom(fromVersion: number): string[] {

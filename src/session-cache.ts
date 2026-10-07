@@ -1,7 +1,7 @@
 import { readFile, stat, open, rename, unlink, readdir, mkdir, rm, type FileHandle } from 'fs/promises'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { createHash, randomBytes } from 'crypto'
-import { join } from 'path'
+import { basename, dirname, join } from 'path'
 import { StringDecoder } from 'string_decoder'
 
 import { getCodeburnCacheDir, RETIRED_PROVIDER_NAMES } from './cache-dir.js'
@@ -300,6 +300,7 @@ export const PROVIDER_ENV_VARS: Record<string, string[]> = {
   'cline-cli': ['CLINE_SESSION_DATA_DIR', 'CLINE_DATA_DIR', 'CLINE_DIR'],
   codebuff: ['CODEBUFF_DATA_DIR'],
   codewhale: ['CODEWHALE_HOME'],
+  'command-code': ['CODEBURN_COMMANDCODE_DIR'],
   codex: ['CODEX_HOME'],
   hermes: ['HERMES_HOME', 'LOCALAPPDATA'],
   'lingtai-tui': ['LINGTAI_HOME', 'LINGTAI_TUI_HOME', 'LINGTAI_TUI_GLOBAL_DIR'],
@@ -378,6 +379,7 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
   // hold costUSD: undefined and get re-priced from tokens on every read.
   'cline-cli': 'reported-cost-v1-est-reprice-v1',
   codewhale: 'aggregate-session-v1-est-cost',
+  'command-code': 'cache-inclusive-input-v1',
   // Bump when the Codex parser changes attribution so unchanged, already-cached
   // session files re-parse (session-cache.json serves them without invoking the
   // provider parser otherwise). Covers native mcp_tool_call_end (#513) and
@@ -423,7 +425,8 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
   // reported-cost-v1: cached Crush calls stored costUSD: undefined and must
   // re-parse to keep the recorded session cost.
   crush: 'reported-cost-v1',
-  cursor: 'composer-anchored-crediting-v1-est-cost',
+  // import-guess-est-v1: synced Auto rows with no dollar amount are estimated.
+  cursor: 'composer-anchored-crediting-v1-est-cost-import-guess-est-v1',
   // full-turn-accounting: every assistant message counts as a turn
   // (previously only the first after each user message survived), tool_use
   // inputs join the output text, and input tokens use the full user text
@@ -432,7 +435,9 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
   // once per user message instead of once per assistant message.
   // store-db-v1 (#986): sessions with no exported transcript are read from
   // ~/.cursor/chats/*/*/store.db.
-  'cursor-agent': 'workspaceless-transcript-v1-full-turn-accounting-v2-store-db-v1-est-cost',
+  // prompt-time-v1: transcript turns take their prompt's <timestamp> tag, not
+  // the session's last write.
+  'cursor-agent': 'workspaceless-transcript-v1-full-turn-accounting-v2-store-db-v1-est-cost-prompt-time-v1',
   // source-provenance-v1 (#944): CLI sessions were misread as VS Code
   // transcripts (both carry producer 'copilot-agent'), skipping the shutdown
   // input/cache rollup; this bump re-parses them so the missing tokens land.
@@ -467,13 +472,20 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
   // keys are unchanged, so the durable union replaces the cached calls in place.
   // journal-request-input-v1: journals also record promptTokens directly on
   // each request. Re-parse unchanged sources to repair cached input totals.
-  copilot: 'cli-shutdown-cost-v1-skills-source-provenance-v1-session-store-v3-chatsession-otel-skills-v1-otel-trace-metadata-once-v1-transcript-unknown-usage-v1-otel-workspace-project-v1-journal-request-input-v1',
+  // tokenless-turns-v1: assistant.message events with no outputTokens field
+  // (CLI 1.0.8x, VS Code agent host) count as calls, and their leg's shutdown
+  // rollup carries output and totalNanoAiu.
+  // store-row-output-v1: every session-store row carries its own
+  // output_tokens; serve time zeroes it where a per-turn call owns the output.
+  // Keys are unchanged, so the re-parse replaces cached output-0 rows in place.
+  copilot: 'cli-shutdown-cost-v1-skills-source-provenance-v1-session-store-v3-chatsession-otel-skills-v1-otel-trace-metadata-once-v1-transcript-unknown-usage-v1-otel-workspace-project-v1-journal-request-input-v1-tokenless-turns-v1-store-row-output-v1',
   // authoritative-usage-v4: persist one Grok session call from top-level
   // authoritative totals, use modelUsage only for priced attribution, clamp
   // reasoning per record, and label mixed sessions estimated.
   grok: 'authoritative-usage-v4',
   // Estimated from message text: Grok Bot's local mirror records no tokens.
-  grokbot: 'estimated-usage-v1',
+  // import-guess-est-v1: synced Grok Bot rows with no dollar amount are estimated.
+  grokbot: 'estimated-usage-v1-import-guess-est-v1',
   // v0-v4 generations, embedded attempt streams, retry accounting, and the
   // version-specific inherited-prefix rules all change cached DSH calls.
   dsh: 'session-formats-v0-v4-attempts-v6',
@@ -577,7 +589,10 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
   // token floor on every read, so they must re-parse once for the real dollars
   // to land.
   warp: 'worktree-project-grouping-v1-est-cost-billing-cost-v1',
-  antigravity: 'worktree-project-grouping-v7',
+  // cache-read-v1-est-cost: gen_metadata and RPC usage now carry cache-read
+  // tokens, fields 9/10 read as thinking/response (they were swapped), and
+  // placeholder-only models are priced and flagged costIsEstimated.
+  antigravity: 'worktree-project-grouping-v7-cache-read-v1-est-cost',
   // pr-attribution-v1: the parser now reads the `message`/`part` tables for
   // per-turn user prompt text and the GitHub PR URLs it references. Cached
   // ZCode sessions hold empty userMessage turns and no session prLinks, so
@@ -2526,6 +2541,28 @@ export async function fingerprintFile(filePath: string): Promise<FileFingerprint
   fingerprintCalls++
   try {
     const s = await stat(filePath)
+    // Unified Vibe publishes immutable generations through CURRENT, but live
+    // usage first lands in its bounded recovery journal without moving CURRENT.
+    if (basename(filePath) === 'CURRENT' && basename(dirname(dirname(filePath))) === 'unified') {
+      const dir = dirname(filePath)
+      const journal = join(dir, 'journal')
+      const names = (await readdir(journal).catch(() => []))
+        .filter(name => /^\d{16}\.jsonl$/.test(name)).sort()
+      const hash = createHash('sha256').update(`${s.ino}:${s.mtimeMs}:${s.size}`)
+      let mtimeMs = s.mtimeMs
+      let sizeBytes = s.size
+      for (const path of [join(dir, 'meta.json'), ...names.map(name => join(journal, name))]) {
+        const info = await stat(path).catch(() => null)
+        hash.update(`\0${path}:${info?.ino}:${info?.mtimeMs}:${info?.size}`)
+        if (info) {
+          mtimeMs = Math.max(mtimeMs, info.mtimeMs)
+          sizeBytes += info.size
+        }
+      }
+      // Composite identity changes even when a non-newest segment is rewritten;
+      // keep sizeBytes real because the parser also uses it for workload sizing.
+      return { dev: s.dev, ino: parseInt(hash.digest('hex').slice(0, 12), 16), mtimeMs, sizeBytes }
+    }
     // A source path that IS a SQLite database (copilot OTel's agent-traces.db)
     // needs the same WAL fold as the virtual-suffix forms below.
     if (SQLITE_DB_PATH.test(filePath)) return fingerprintSqliteFile(filePath)
